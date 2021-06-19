@@ -1,47 +1,113 @@
-// Inject
-// document.addEventListener("DOMContentLoaded", function() {
-plot_data_joint_velocity_2 = {
-    'x': [],
-    'y': [],
+
+plot_data_x = [] // Use a single array for all the x data.
+plot_data = {}
+
+got_data = false
+
+plot_div = undefined
+
+max_len = 5000
+displayed_field_names = []
+displayed_field_data = []
+displayed_traces = []
+
+freeze_plot = false
+
+function initPlot() {
+    if (plot_div) {
+        Plotly.purge(plot_div)
+    }
+
+    lines = displayed_field_names.map(function(field_name) {
+        return {
+            x: [1, 2, 3],
+            y: [0.1, 0.6, 1.1],
+            line: {simplify: false},
+            name: field_name
+        }
+    });
+
+    Plotly.newPlot('js_plot', lines).then(function(res) {
+        plot_div = res
+    })
 }
 
-plot_data_joint_velocity_1 = {
-    'x': [],
-    'y': [],
+function addTrace(field_name, field_index) {
+    displayed_field_names.push(field_name + '[' + field_index + ']');
+    displayed_field_data.push(plot_data[field_name][field_index]);
+    displayed_traces.push(displayed_traces.length)
+
+    Plotly.addTraces(plot_div, plot_data[field_name][field_index])
+    // initPlot()
 }
 
-function parseData() {
-    data = JSON.parse(window.ws_data)
-    // data = "array('d', [0.0, 0.003146721098158093, 0.9104816593594021, -1.8725880262586807, 0.006809609095255532, 0.9221193364461262, -1.9009687042236325, -0.0026484896341959618, -0.9214965371025934, 1.9187384728325736, -0.006649294747246614, -0.9023925196329752])"
 
-    parsed = data['ctrl.joint_velocities'].slice(12, -2).split(', ')
+function handleField(field_name, field_data) {
+    parsed = field_data.slice(12, -2).split(', ')
 
-    // dbg.textContent = parsed
+    if (!(field_name in plot_data)) {
+        empty_data = []
+        for (i = 0; i < parsed.length; i++) {
+            empty_data.push({
+                x: plot_data_x,
+                y: []
+            });
+        }
 
-    plot_data_joint_velocity_1.x.push(plot_data_joint_velocity_1['x'].length)
-    plot_data_joint_velocity_1.y.push(parseFloat(parsed[1]))
+        plot_data[field_name] = empty_data;
+    }
 
-    plot_data_joint_velocity_2.x.push(plot_data_joint_velocity_2['x'].length)
-    plot_data_joint_velocity_2.y.push(parseFloat(parsed[2]))
+    // Add the recieved data on the y axis.
+    field_plot_data = plot_data[field_name]
+
+    shift_data = field_plot_data[0].y.length > max_len;
+
+    for (i = 0; i < parsed.length; i++) {
+        field_plot_data[i].y.push(parseFloat(parsed[i]));
+
+        if (shift_data) {
+            field_plot_data[i].y.shift();
+        }
+    }
+}
+
+function parseData(data) {
+    if (freeze_plot) {
+        return;
+    }
+    data = JSON.parse(data)
+    x = parseFloat(data['time'])
+
+    plot_data_x.push(x)
+    if (plot_data_x.length > max_len)
+        plot_data_x.shift()
+
+    for (let [key, value] of Object.entries(data)) {
+        if (key === 'time') {
+            continue;
+        }
+
+        handleField(key, value);
+    }
 }
 
 function update_plot() {
-    Plotly.animate('js_plot', {
-        data: [
-            // plot_data_joint_velocity_1,
-            plot_data_joint_velocity_2
-        ],
-        traces: [0],
-        layout: {}
-    }, {
-        transition: {
-            duration: 1,
-            easing: 'cubic-in-out'
-        },
-        frame: {
-            duration: 1
-        }
-    })
+    if (got_data) {
+        Plotly.animate('js_plot', {
+            data: displayed_field_data,
+            traces: displayed_traces,
+            layout: {}
+        }, {
+            transition: {
+                duration: 1,
+                easing: 'cubic-in-out'
+            },
+            frame: {
+                duration: 1
+            }
+        })
+    }
+
     window.requestAnimationFrame(update_plot);
 }
 
@@ -58,27 +124,20 @@ function setup() {
 
     ws.onmessage = function (event) {
         window.ws_data = event.data
-        // message.textContent = event.data
-
-        // message.appendChild(content);
-        // messages.appendChild(message);
-
-        parseData()
+        parseData(event.data)
+        got_data = true
     };
 
-    Plotly.newPlot('js_plot', [{
-        x: [1, 2, 3],
-        joint_positions_0: [0, 0.5, 1],
-        y: [0.1, 0.6, 1.1],
-        line: {simplify: false},
-    }]);
-
+    document.querySelector('#btn_start_stop').addEventListener('click', (evt) => {
+        freeze_plot = !freeze_plot;
+    })
 
     document.body.appendChild(messages);
 
+    initPlot()
     window.requestAnimationFrame(update_plot);
 
 };
 
-setTimeout(setup, 3000)
+setTimeout(setup, 1000)
 

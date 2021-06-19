@@ -60,9 +60,12 @@ app.layout = html.Div(children=[
 
     html.Div(
         id="info",
-        children='''
-            Dash: A web application framework for Python.
-        '''),
+        children=[
+            html.Button(
+                id="btn_start_stop",
+                children="Start/Stop"
+            )
+        ]),
 
     html.Div(
         id="js_plot",
@@ -84,11 +87,13 @@ async def basic_streaming(websocket, path):
 
         reader.read_chunck(c, data)
 
+        data['_timestamp'] = now
+        data['time'] = c / 1000.
+
         # Convert the arrays to byte strings.
         for key, value in data.items():
             data[key] = str(value)
 
-        data['_timestamp'] = now
 
         await websocket.send(json.dumps(data))
         await asyncio.sleep(0.001)
