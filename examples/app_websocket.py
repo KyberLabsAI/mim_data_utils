@@ -24,14 +24,15 @@ async def basic_streaming(websocket, path):
 
         reader.read_chunck(c, data)
 
-        # Convert the arrays to byte strings.
+        data['_timestamp'] = now
+        data['time'] = c / 1000.
+
+        # Convert the arrays to strings.
         for key, value in data.items():
             data[key] = str(value)
 
-        data['_timestamp'] = now
-
         await websocket.send(json.dumps(data))
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.001)
 
 if __name__ == '__main__':
     start_server = websockets.serve(basic_streaming, "127.0.0.1", 5678)

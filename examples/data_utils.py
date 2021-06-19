@@ -112,7 +112,7 @@ class DataReader:
         fh = self.fh
 
         # Compute the address for the data chunck.
-        pos = 8 + (64 + 4) * self.num_fields # Header + field info
+        pos = 16 + (64 + 4) * self.num_fields # Header + field info
         pos += self.chunck_size * chunck_idx
 
         fh.seek(pos, 0)

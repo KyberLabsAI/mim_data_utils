@@ -12,6 +12,7 @@ displayed_field_data = []
 displayed_traces = []
 
 freeze_plot = false
+stream_data = true
 
 function initPlot() {
     if (plot_div) {
@@ -27,7 +28,17 @@ function initPlot() {
         }
     });
 
-    Plotly.newPlot('js_plot', lines).then(function(res) {
+    var layout = {
+        margin: {
+            l: 50,
+            r: 50,
+            b: 50,
+            t: 50,
+            pad: 4
+        }
+    };
+
+    Plotly.newPlot('js_plot', lines, layout).then(function(res) {
         plot_div = res
     })
 }
@@ -38,7 +49,14 @@ function addTrace(field_name, field_index) {
     displayed_traces.push(displayed_traces.length)
 
     Plotly.addTraces(plot_div, plot_data[field_name][field_index])
-    // initPlot()
+}
+
+function remove_all_traces() {
+    Plotly.deleteTraces(plot_div, displayed_traces)
+
+    displayed_field_names = []
+    displayed_field_data = []
+    displayed_traces = []
 }
 
 
@@ -46,21 +64,28 @@ function handleField(field_name, field_data) {
     parsed = field_data.slice(12, -2).split(', ')
 
     if (!(field_name in plot_data)) {
-        empty_data = []
+        let empty_data = []
         for (i = 0; i < parsed.length; i++) {
             empty_data.push({
                 x: plot_data_x,
-                y: []
+                y: [],
+                name: field_name + '[' + i + ']'
             });
         }
 
         plot_data[field_name] = empty_data;
+
+        // Add the new field to the GUI.
+        let option = document.createElement('option')
+        option.textContent = field_name
+        option.value = field_name
+        document.querySelector('#trace_field_name_select').appendChild(option)
     }
 
     // Add the recieved data on the y axis.
-    field_plot_data = plot_data[field_name]
+    let field_plot_data = plot_data[field_name]
 
-    shift_data = field_plot_data[0].y.length > max_len;
+    let shift_data = stream_data && field_plot_data[0].y.length > max_len;
 
     for (i = 0; i < parsed.length; i++) {
         field_plot_data[i].y.push(parseFloat(parsed[i]));
@@ -79,7 +104,7 @@ function parseData(data) {
     x = parseFloat(data['time'])
 
     plot_data_x.push(x)
-    if (plot_data_x.length > max_len)
+    if (stream_data && plot_data_x.length > max_len)
         plot_data_x.shift()
 
     for (let [key, value] of Object.entries(data)) {
@@ -112,27 +137,39 @@ function update_plot() {
 }
 
 function setup() {
-    // alert('Hello world ws & plotting.')
     var ws = new WebSocket("ws://127.0.0.1:5678/");
 
-    var messages = document.createElement('ul');
-    var message = document.createElement('li');
-    messages.append(message)
-
-    dbg = document.createElement('li');
-    messages.append(dbg)
-
+    stream_data = true
     ws.onmessage = function (event) {
-        window.ws_data = event.data
         parseData(event.data)
         got_data = true
     };
+    ws.onerror = function (event) {
+        stream_data = false
+        alert('Failed to open web socket. Assuming to load data file.')
+    }
 
     document.querySelector('#btn_start_stop').addEventListener('click', (evt) => {
         freeze_plot = !freeze_plot;
-    })
+    });
 
-    document.body.appendChild(messages);
+    document.querySelector('#btn_add_traces').addEventListener('click', (evt) => {
+        let field_name = document.querySelector('#trace_field_name_select').value
+        let ids = document.querySelector('#trace_field_index_input').value
+        ids = ids.split(',').map((e) => parseInt(e.trim()))
+
+        ids.forEach((id) => {
+            addTrace(field_name, id)
+        })
+    });
+
+    document.querySelector('#btn_remove_all_traces').addEventListener('click', (evt) => {
+        remove_all_traces();
+    });
+
+    document.querySelector('#btn_load_log_file').addEventListener('click', (evt) => {
+
+    })
 
     initPlot()
     window.requestAnimationFrame(update_plot);

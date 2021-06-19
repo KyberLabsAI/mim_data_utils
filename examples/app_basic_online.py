@@ -56,7 +56,7 @@ fig.update_layout(legend=dict(
 ))
 
 app.layout = html.Div(children=[
-    html.H1(children='Hello Dash Tutorial'),
+    html.H1(children='Maschines in Motion Plotting Tool'),
 
     html.Div(
         id="info",
@@ -64,6 +64,20 @@ app.layout = html.Div(children=[
             html.Button(
                 id="btn_start_stop",
                 children="Start/Stop"
+            ),
+            html.Select(
+                id="trace_field_name_select"
+            ),
+            dcc.Input(
+                id='trace_field_index_input'
+            ),
+            html.Button(
+                id="btn_add_traces",
+                children="Add traces"
+            ),
+            html.Button(
+                id="btn_remove_all_traces",
+                children="Remove all traces"
             )
         ]),
 
@@ -73,7 +87,6 @@ app.layout = html.Div(children=[
             'height': '400px'
         },
         children='''
-            Plot generated from JavaScript placeholder.
         '''),
 ])
 
