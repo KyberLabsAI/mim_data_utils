@@ -35,11 +35,12 @@ class DataLogger:
         assert self.fh, 'File is not open'
         self.fh.close()
 
-    def begin_next_timestamp(self):
+    def begin_timestamp(self):
         if self.fh is None:
             self.init_file()
 
         self.file_index += 1
+
         self.fh.seek(0, 0) # Beginning of the file.
         self.fh.write(struct.pack('l', self.file_index))
 
