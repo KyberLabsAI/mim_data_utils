@@ -59,31 +59,35 @@ function remove_all_traces() {
     displayed_traces = []
 }
 
+function addField(field_name, field_size) {
+    let empty_data = []
+    for (i = 0; i < field_size; i++) {
+        empty_data.push({
+            x: plot_data_x,
+            y: [],
+            name: field_name + '[' + i + ']'
+        });
+    }
+
+    plot_data[field_name] = empty_data;
+
+    // Add the new field to the GUI.
+    let option = document.createElement('option')
+    option.textContent = field_name
+    option.value = field_name
+    document.querySelector('#trace_field_name_select').appendChild(option)
+}
+
 
 function handleField(field_name, field_data) {
     parsed = field_data.slice(12, -2).split(', ')
 
     if (!(field_name in plot_data)) {
-        let empty_data = []
-        for (i = 0; i < parsed.length; i++) {
-            empty_data.push({
-                x: plot_data_x,
-                y: [],
-                name: field_name + '[' + i + ']'
-            });
-        }
-
-        plot_data[field_name] = empty_data;
-
-        // Add the new field to the GUI.
-        let option = document.createElement('option')
-        option.textContent = field_name
-        option.value = field_name
-        document.querySelector('#trace_field_name_select').appendChild(option)
+        addField(field_name, parsed.length);
     }
 
     // Add the recieved data on the y axis.
-    let field_plot_data = plot_data[field_name]
+    let field_plot_data = plot_data[field_name];
 
     let shift_data = stream_data && field_plot_data[0].y.length > max_len;
 
@@ -136,6 +140,59 @@ function update_plot() {
     window.requestAnimationFrame(update_plot);
 }
 
+function read_datafile(binaryBuffer) {
+    let dv = new DataView(binaryBuffer);
+    let idx = dv.getUint32(0, true);
+    let num_fields = dv.getUint32(4, true);
+
+    let offset = 8;
+    var enc = new TextDecoder("utf-8");
+
+    // Reset the data as we will read new one.
+    plot_data = {};
+    plot_data_x = [];
+    for (let i = 0; i <= idx; i++) {
+        // HACK: Assuem dt=0.001 for now.
+        plot_data_x.push(i / 0.001);
+    }
+    remove_all_traces();
+    document.querySelector('#trace_field_name_select').innerHTML = ''
+
+    let field_names = [];
+    let field_sizes = []
+
+    for (let f = 0; f < num_fields; f++) {
+        arr = []
+        for (let i = 0; i < 64; i++) {
+            arr.push(dv.getUint8(offset));
+
+            offset += 1
+        }
+        field_name = enc.decode(new Uint8Array(arr))
+        field_name = field_name.replaceAll('\u0000', '')
+        field_size = dv.getUint32(offset, true);
+        offset += 4;
+
+        field_names.push(field_name);
+        field_sizes.push(field_size);
+
+        // Initialize the plot_data for this field.
+        addField(field_name, field_size);
+        console.log('  ', field_name, '@', field_size);
+    }
+
+    // Read the sensor data blob.
+    for (let j = 0; j <= idx; j ++) {
+        for (let f = 0; f < num_fields; f++) {
+            let field_name = field_names[f];
+            for (let i = 0; i < field_sizes[f]; i++) {
+                plot_data[field_name][i].y.push(dv.getFloat64(offset, true));
+                offset += 8
+            }
+        }
+    }
+}
+
 function setup() {
     var ws = new WebSocket("ws://127.0.0.1:5678/");
 
@@ -167,8 +224,11 @@ function setup() {
         remove_all_traces();
     });
 
-    document.querySelector('#btn_load_log_file').addEventListener('click', (evt) => {
-
+    document.querySelector('#btn_load_log_file').addEventListener('click', async (evt) => {
+        [fileHandle] = await window.showOpenFilePicker();
+        let file = await fileHandle.getFile();
+        content = await file.arrayBuffer();
+        read_datafile(content)
     })
 
     initPlot()

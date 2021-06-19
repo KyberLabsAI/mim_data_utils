@@ -32,7 +32,7 @@ class DataLogger:
         self.fh = open(self.filepath, "wb+")
 
         # Write the header.
-        arr = array.array('l', [0, len(self.fields)])
+        arr = array.array('I', [0, len(self.fields)])
         self.fh.write(arr.tobytes())
 
         for (name, size) in self.fields:
@@ -50,7 +50,7 @@ class DataLogger:
         self.file_index += 1
 
         self.fh.seek(0, 0) # Beginning of the file.
-        self.fh.write(struct.pack('l', self.file_index))
+        self.fh.write(struct.pack('I', self.file_index))
 
         self.fh.seek(0, 2) # End of the file.
 
@@ -89,8 +89,8 @@ class DataReader:
             self.read_data()
 
     def read_header(self):
-        byt = self.fh.read(16)
-        self.idx, self.num_fields = struct.unpack('ll', byt)
+        byt = self.fh.read(8)
+        self.idx, self.num_fields = struct.unpack('II', byt)
 
         print('idx:', self.idx, 'fields:', self.num_fields)
 
@@ -112,7 +112,7 @@ class DataReader:
         fh = self.fh
 
         # Compute the address for the data chunck.
-        pos = 16 + (64 + 4) * self.num_fields # Header + field info
+        pos = 8 + (64 + 4) * self.num_fields # Header + field info
         pos += self.chunck_size * chunck_idx
 
         fh.seek(pos, 0)
@@ -130,7 +130,7 @@ class DataReader:
         fh = self.fh
 
         # Move to the begining of the data section in the file.
-        # fh.seek(8 + (64 + 4) * self.num_fields)
+        fh.seek(8 + (64 + 4) * self.num_fields)
 
         # Read all the entires.
         for i in range(self.idx + 1):
