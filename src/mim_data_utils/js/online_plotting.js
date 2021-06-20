@@ -140,27 +140,31 @@ function update_plot() {
     window.requestAnimationFrame(update_plot);
 }
 
-function read_datafile(binaryBuffer) {
+function readDatafile(binaryBuffer) {
     let dv = new DataView(binaryBuffer);
+
+    let offset = 0;
+    var enc = new TextDecoder("utf-8");
+
+    let field_names = [];
+    let field_sizes = []
+
+    // Read the header of hte file.
     let idx = dv.getUint32(0, true);
     let num_fields = dv.getUint32(4, true);
-
-    let offset = 8;
-    var enc = new TextDecoder("utf-8");
+    offset += 8;
 
     // Reset the data as we will read new one.
     plot_data = {};
     plot_data_x = [];
     for (let i = 0; i <= idx; i++) {
         // HACK: Assuem dt=0.001 for now.
-        plot_data_x.push(i / 0.001);
+        plot_data_x.push(i * 0.001);
     }
     remove_all_traces();
     document.querySelector('#trace_field_name_select').innerHTML = ''
 
-    let field_names = [];
-    let field_sizes = []
-
+    // Read the field data.
     for (let f = 0; f < num_fields; f++) {
         arr = []
         for (let i = 0; i < 64; i++) {
@@ -181,13 +185,13 @@ function read_datafile(binaryBuffer) {
         console.log('  ', field_name, '@', field_size);
     }
 
-    // Read the sensor data blob.
+    // Read the data blob.
     for (let j = 0; j <= idx; j ++) {
         for (let f = 0; f < num_fields; f++) {
             let field_name = field_names[f];
             for (let i = 0; i < field_sizes[f]; i++) {
                 plot_data[field_name][i].y.push(dv.getFloat64(offset, true));
-                offset += 8
+                offset += 8;
             }
         }
     }
@@ -215,6 +219,12 @@ function setup() {
         let ids = document.querySelector('#trace_field_index_input').value
         ids = ids.split(',').map((e) => parseInt(e.trim()))
 
+        if (ids.length === 0 || isNaN(ids[0])) {
+            alert("Please provide the indices of the data to add.");
+            document.querySelector('#trace_field_index_input').focus();
+            return;
+        }
+
         ids.forEach((id) => {
             addTrace(field_name, id)
         })
@@ -225,10 +235,22 @@ function setup() {
     });
 
     document.querySelector('#btn_load_log_file').addEventListener('click', async (evt) => {
-        [fileHandle] = await window.showOpenFilePicker();
+        const pickerOpts = {
+            types: [
+                {
+                description: 'Images',
+                accept: {
+                    'image/*': ['.mds']
+                }
+                },
+            ],
+            excludeAcceptAllOption: true,
+            multiple: false
+        };
+        [fileHandle] = await window.showOpenFilePicker(pickerOpts);
         let file = await fileHandle.getFile();
         content = await file.arrayBuffer();
-        read_datafile(content)
+        readDatafile(content)
     })
 
     initPlot()
@@ -237,4 +259,3 @@ function setup() {
 };
 
 setTimeout(setup, 1000)
-

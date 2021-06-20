@@ -8,10 +8,9 @@ A collection of scripts for:
 
 ## Installation
 
-We rely on [dash](https://dash.plotly.com/introduction) and [plotly](https://plotly.com/) for the plotting part. We use the [websockets](https://websockets.readthedocs.io/en/stable/intro.html) library to communicate data between the browser and the server.
+We rely on [plotly](https://plotly.com/) for the plotting part. We use the [websockets](https://websockets.readthedocs.io/en/stable/intro.html) library to communicate data between the browser and the server.
 
 ```
-$ pip install dash
 $ pip install websockets
 ```
 
