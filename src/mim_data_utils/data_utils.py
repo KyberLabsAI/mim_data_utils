@@ -57,9 +57,6 @@ class DataLogger:
     def log_array(self, field_id, value):
         self.field_data[field_id][:] = value
 
-    def log_array(self, field_id, value):
-        self.field_data[field_id][:] = value
-
     def log_int(self, field_id, value):
         self.field_data[field_id][0] = float(value)
 
@@ -71,7 +68,7 @@ class DataLogger:
         for value in self.field_data:
             self.fh.write(value.tobytes())
 
-        self.fh.flush()
+        # self.fh.flush()
 
 
 class DataReader:
