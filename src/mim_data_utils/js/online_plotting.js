@@ -73,7 +73,7 @@ function addField(field_name, field_size) {
 
     // Add the new field to the GUI.
     let option = document.createElement('option')
-    option.textContent = field_name
+    option.textContent = field_name + '['+ field_size + ']'
     option.value = field_name
     document.querySelector('#trace_field_name_select').appendChild(option)
 }
