@@ -3,13 +3,13 @@ import array
 
 import numpy as np
 
-# data_type = np.float
-# data_type_letter = 'f'
-# data_size = 4
+data_type = np.float32
+data_type_letter = 'f'
+data_size = 4
 
-data_type = np.double
-data_type_letter = 'd'
-data_size = 8
+# data_type = np.double
+# data_type_letter = 'd'
+# data_size = 8
 
 class DataLogger:
     def __init__(self, filepath):
