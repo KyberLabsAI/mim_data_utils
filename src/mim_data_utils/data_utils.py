@@ -1,5 +1,6 @@
 import struct
 import array
+import gzip
 
 import numpy as np
 
@@ -29,7 +30,7 @@ class DataLogger:
         return len(self.fields) - 1
 
     def init_file(self):
-        self.fh = open(self.filepath, "wb+")
+        self.fh = gzip.open(self.filepath, "wb+")
 
         # Write the header.
         arr = array.array('I', [0, len(self.fields)])
@@ -49,10 +50,11 @@ class DataLogger:
 
         self.file_index += 1
 
-        self.fh.seek(0, 0) # Beginning of the file.
-        self.fh.write(struct.pack('I', self.file_index))
-
-        self.fh.seek(0, 2) # End of the file.
+        # Negative seek not supported by gzip.
+        # self.fh.seek(0, 0) # Beginning of the file.
+        # self.fh.write(struct.pack('I', self.file_index))
+        #
+        # self.fh.seek(0, 2) # End of the file.
 
     def log_array(self, field_id, value):
         self.field_data[field_id][:] = value
@@ -74,10 +76,11 @@ class DataLogger:
 class DataReader:
     def __init__(self, filepath, read_data=True):
         self.filepath = filepath
-        self.fh = open(self.filepath, 'rb+')
+        self.fh = gzip.open(self.filepath, 'rb+')
 
         self.fields = []
         self.data = {}
+        self.tmp_data = {}
 
         self.read_header()
         self.read_fields()
@@ -91,6 +94,7 @@ class DataReader:
 
         print('idx:', self.idx, 'fields:', self.num_fields)
 
+
     def read_fields(self):
         self.chunck_size = 0
         for _ in range(self.num_fields):
@@ -98,7 +102,7 @@ class DataReader:
             name, size = struct.unpack("64s I", byt)
             name = name.decode('utf8').rstrip('\x00')
             self.fields.append((name, size))
-            self.data[name] = np.zeros((self.idx + 1, size), np.double)
+            self.tmp_data[name] = []
 
             self.chunck_size += size * data_size
 
@@ -130,8 +134,18 @@ class DataReader:
         fh.seek(8 + (64 + 4) * self.num_fields)
 
         # Read all the entires.
-        for i in range(self.idx + 1):
-            for (field_name, field_size) in self.fields:
+        idx = 0
+        N_fields = len(self.fields)
+        data = fh.read(data_size * self.fields[0][1])
+        while data:
+            for i, (field_name, field_size) in enumerate(self.fields):
                 arr = array.array(data_type_letter)
-                arr.frombytes(fh.read(data_size * field_size))
-                self.data[field_name][i] = arr
+                arr.frombytes(data)
+                self.tmp_data[field_name].append(arr)
+                data = fh.read(data_size * self.fields[(i + 1) % N_fields][1])
+            idx += 1
+
+        # Convert the arrays in `tmp_data` to numpy arrays and store them on
+        # data.
+        for i, (field_name, field_size) in enumerate(self.fields):
+            self.data[field_name] = np.array(self.tmp_data[field_name])

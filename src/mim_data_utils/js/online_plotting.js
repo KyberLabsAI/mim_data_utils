@@ -141,7 +141,12 @@ function update_plot() {
 }
 
 function readDatafile(binaryBuffer) {
-    let dv = new DataView(binaryBuffer);
+    // Ungzip the datafile.
+    let binData = new Uint8Array(binaryBuffer);
+    var data = pako.inflate(binData);
+
+    // Create a dataview on the data for easier reading of values.
+    let dv = new DataView(data.buffer);
 
     let offset = 0;
     var enc = new TextDecoder("utf-8");
@@ -157,10 +162,7 @@ function readDatafile(binaryBuffer) {
     // Reset the data as we will read new one.
     plot_data = {};
     plot_data_x = [];
-    for (let i = 0; i <= idx; i++) {
-        // HACK: Assuem dt=0.001 for now.
-        plot_data_x.push(i * 0.001);
-    }
+
     remove_all_traces();
     document.querySelector('#trace_field_name_select').innerHTML = ''
 
@@ -186,7 +188,7 @@ function readDatafile(binaryBuffer) {
     }
 
     // Read the data blob.
-    for (let j = 0; j <= idx; j ++) {
+    for (var j = 0; offset < data.length; j++) {
         for (let f = 0; f < num_fields; f++) {
             let field_name = field_names[f];
             for (let i = 0; i < field_sizes[f]; i++) {
@@ -194,6 +196,12 @@ function readDatafile(binaryBuffer) {
                 offset += 4;
             }
         }
+    }
+
+    // Init the x-axis data.
+    for (let i = 0; i < j; i++) {
+        // HACK: Assuem dt=0.001 for now.
+        plot_data_x.push(i * 0.001);
     }
 }
 
