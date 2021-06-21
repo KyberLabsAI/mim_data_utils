@@ -190,8 +190,8 @@ function readDatafile(binaryBuffer) {
         for (let f = 0; f < num_fields; f++) {
             let field_name = field_names[f];
             for (let i = 0; i < field_sizes[f]; i++) {
-                plot_data[field_name][i].y.push(dv.getFloat64(offset, true));
-                offset += 8;
+                plot_data[field_name][i].y.push(dv.getFloat32(offset, true));
+                offset += 4;
             }
         }
     }
