@@ -44,7 +44,7 @@ class DataLogger:
         assert self.fh, 'File is not open'
         self.fh.close()
 
-    def begin_timestamp(self):
+    def begin_timestep(self):
         if self.fh is None:
             self.init_file()
 
