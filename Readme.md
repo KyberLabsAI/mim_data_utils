@@ -1,4 +1,4 @@
-# Maschines in Motion Data Utils (mim_data_utils)
+# Machines in Motion Data Utils (mim_data_utils)
 
 ## What is this
 
