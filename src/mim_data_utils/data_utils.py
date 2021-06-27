@@ -56,14 +56,8 @@ class DataLogger:
         #
         # self.fh.seek(0, 2) # End of the file.
 
-    def log_array(self, field_id, value):
+    def log(self, field_id, value):
         self.field_data[field_id][:] = value
-
-    def log_int(self, field_id, value):
-        self.field_data[field_id][0] = float(value)
-
-    def log_float(self, field_id, value):
-        self.field_data[field_id][0] = value
 
     def end_timestep(self):
         # Write the recorded field_data to the file.

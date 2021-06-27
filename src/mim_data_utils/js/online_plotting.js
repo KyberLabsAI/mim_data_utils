@@ -3,95 +3,180 @@ plot_data_x = [] // Use a single array for all the x data.
 plot_data = {}
 
 got_data = false
-
-plot_div = undefined
-
 max_len = 5000
-displayed_field_names = []
-displayed_field_data = []
-displayed_traces = []
 
 freeze_plot = false
 stream_data = true
+scheduledRequestAnimationFrame = false
 
-function initPlot() {
-    if (plot_div) {
-        Plotly.purge(plot_div)
+plots = []
+
+class Plot {
+    constructor(domId) {
+        this.domId = domId;
+
+        this.displayedFieldNames = []
+        this.displayedFieldData = []
+        this.displayedTraces = []
+
+        plots.push(this)
+
+        this.createDom();
+        this.initFields()
+        this.initPlot();
     }
 
-    lines = displayed_field_names.map(function(field_name) {
-        return {
-            x: [1, 2, 3],
-            y: [0.1, 0.6, 1.1],
-            line: {simplify: false},
-            name: field_name
+    createDom() {
+        function create(type, parent, text) {
+            let dom = document.createElement(type);
+            dom.textContent = text || '';
+
+            if (parent) {
+                parent.appendChild(dom)
+            }
+            return dom
         }
-    });
+        this.domMainDiv = create('div');
+        this.domSelectFieldName = create('select', this.domMainDiv)
+        this.domTraceFieldIndexInput = create('input', this.domMainDiv)
+        this.domBtnAddTrace = create('button', this.domMainDiv, 'Add traces')
+        this.domBtnRemoveTraces = create('button', this.domMainDiv, 'Remove all traces')
+        this.domBtnRemovePlot = create('button', this.domMainDiv, 'Remove plot')
+        this.domPlotDiv = create('div', this.domMainDiv)
 
-    var layout = {
-        margin: {
-            l: 50,
-            r: 50,
-            b: 50,
-            t: 50,
-            pad: 4
-        }
-    };
+        document.body.appendChild(this.domMainDiv)
 
-    Plotly.newPlot('js_plot', lines, layout).then(function(res) {
-        plot_div = res
-    })
-}
+        this.domBtnAddTrace.addEventListener('click', (evt) => {
+            let fieldName = this.domSelectFieldName.value
+            let ids = this.domTraceFieldIndexInput.value
+            ids = ids.split(',').map((e) => parseInt(e.trim()))
 
-function addTrace(field_name, field_index) {
-    displayed_field_names.push(field_name + '[' + field_index + ']');
-    displayed_field_data.push(plot_data[field_name][field_index]);
-    displayed_traces.push(displayed_traces.length)
+            if (ids.length === 0 || isNaN(ids[0])) {
+                alert("Please provide the indices of the data to add.");
+                document.querySelector('#trace_field_index_input').focus();
+                return;
+            }
 
-    Plotly.addTraces(plot_div, plot_data[field_name][field_index])
-}
-
-function remove_all_traces() {
-    Plotly.deleteTraces(plot_div, displayed_traces)
-
-    displayed_field_names = []
-    displayed_field_data = []
-    displayed_traces = []
-}
-
-function addField(field_name, field_size) {
-    let empty_data = []
-    for (i = 0; i < field_size; i++) {
-        empty_data.push({
-            x: plot_data_x,
-            y: [],
-            name: field_name + '[' + i + ']'
+            ids.forEach((id) => {
+                this.addTrace(fieldName, id)
+            })
         });
+
+        this.domBtnRemoveTraces.addEventListener('click', (evt) => {
+            this.removeAllTraces();
+        });
+
+        this.domBtnRemovePlot.addEventListener('click', (evt) => {
+            this.removePlot()
+        })
     }
 
-    plot_data[field_name] = empty_data;
+    removePlot() {
+        let idx = plots.indexOf(this);
+        plots.splice(idx);
+        document.body.removeChild(this.domMainDiv);
+    }
 
-    // Add the new field to the GUI.
-    let option = document.createElement('option')
-    option.textContent = field_name + '['+ field_size + ']'
-    option.value = field_name
-    document.querySelector('#trace_field_name_select').appendChild(option)
+    initFields() {
+        Object.keys(plot_data).forEach((name) => {
+            this.addField(name, plot_data[name].length)
+        })
+    }
+
+    initPlot() {
+        var lines = this.displayedFieldNames.map(function(field_name) {
+            return {
+                x: [1, 2, 3],
+                y: [0.1, 0.6, 1.1],
+                line: {simplify: false},
+                name: field_name
+            }
+        });
+
+        var layout = {
+            margin: {
+                l: 50,
+                r: 50,
+                b: 50,
+                t: 50,
+                pad: 4
+            }
+        };
+
+        Plotly.newPlot(this.domPlotDiv, lines, layout).then((res) => {
+            this.plotDiv = res
+        })
+    }
+
+    addTrace(fieldName, fieldIndex) {
+        this.displayedFieldNames.push(fieldName + '[' + fieldIndex + ']');
+        this.displayedFieldData.push(plot_data[fieldName][fieldIndex]);
+        this.displayedTraces.push(this.displayedTraces.length)
+
+        Plotly.addTraces(this.plotDiv, plot_data[fieldName][fieldIndex])
+    }
+
+    updateTraces() {
+        Plotly.animate(this.plotDiv, {
+            data: this.displayedFieldData,
+            traces: this.displayedTraces,
+            layout: {}
+        }, {
+            transition: {
+                duration: 1,
+                easing: 'cubic-in-out'
+            },
+            frame: {
+                duration: 1
+            }
+        })
+    }
+
+
+    removeAllTraces() {
+        Plotly.deleteTraces(this.plotDiv, this.displayedTraces)
+
+        this.displayedFieldNames = [];
+        this.displayedFieldData = [];
+        this.displayedTraces = [];
+
+        this.domSelectFieldName.innerHTML = '';
+    }
+
+    addField(fieldName, fieldSize) {
+        // Add the new field to the GUI.
+        let option = document.createElement('option')
+        option.textContent = fieldName + '['+ fieldSize + ']'
+        option.value = fieldName
+        this.domSelectFieldName.appendChild(option)
+    }
 }
-
 
 function handleField(field_name, field_data) {
     parsed = field_data.slice(12, -2).split(', ')
+    fieldSize = parsed.length
 
     if (!(field_name in plot_data)) {
-        addField(field_name, parsed.length);
+        let emptyData = []
+        for (i = 0; i < fieldSize; i++) {
+            emptyData.push({
+                x: plot_data_x,
+                y: [],
+                name: field_name + '[' + i + ']'
+            })
+        }
+        plot_data[field_name] = emptyData;
+
+        plots.forEach((plt) => plt.addField(field_name, fieldSize))
     }
 
     // Add the recieved data on the y axis.
     let field_plot_data = plot_data[field_name];
 
-    let shift_data = stream_data && field_plot_data[0].y.length > max_len;
+    // Remove data if we have logged too much.
+    let shift_data = stream_data && plot_data_x.length > max_len;
 
-    for (i = 0; i < parsed.length; i++) {
+    for (i = 0; i < fieldSize; i++) {
         field_plot_data[i].y.push(parseFloat(parsed[i]));
 
         if (shift_data) {
@@ -121,23 +206,11 @@ function parseData(data) {
 }
 
 function update_plot() {
-    if (got_data) {
-        Plotly.animate('js_plot', {
-            data: displayed_field_data,
-            traces: displayed_traces,
-            layout: {}
-        }, {
-            transition: {
-                duration: 1,
-                easing: 'cubic-in-out'
-            },
-            frame: {
-                duration: 1
-            }
-        })
-    }
+    scheduledRequestAnimationFrame = false
 
-    window.requestAnimationFrame(update_plot);
+    if (got_data) {
+        plots.forEach((plt) => plt.updateTraces())
+    }
 }
 
 function readDatafile(binaryBuffer) {
@@ -163,8 +236,7 @@ function readDatafile(binaryBuffer) {
     plot_data = {};
     plot_data_x = [];
 
-    remove_all_traces();
-    document.querySelector('#trace_field_name_select').innerHTML = ''
+    plots.forEach((plot) => plot.removeAllTraces())
 
     // Read the field data.
     for (let f = 0; f < num_fields; f++) {
@@ -182,8 +254,19 @@ function readDatafile(binaryBuffer) {
         field_names.push(field_name);
         field_sizes.push(field_size);
 
+        let empty_data = []
+        for (i = 0; i < field_size; i++) {
+            empty_data.push({
+                x: plot_data_x,
+                y: [],
+                name: field_name + '[' + i + ']'
+            });
+        }
+
+        plot_data[field_name] = empty_data;
+
         // Initialize the plot_data for this field.
-        addField(field_name, field_size);
+        plots.forEach((plot) => plot.addField(field_name, field_size))
         console.log('  ', field_name, '@', field_size);
     }
 
@@ -212,6 +295,10 @@ function setup() {
     ws.onmessage = function (event) {
         parseData(event.data)
         got_data = true
+        if (!scheduledRequestAnimationFrame) {
+            scheduledRequestAnimationFrame = true
+            window.requestAnimationFrame(update_plot);
+        }
     };
     ws.onerror = function (event) {
         stream_data = false
@@ -222,33 +309,17 @@ function setup() {
         freeze_plot = !freeze_plot;
     });
 
-    document.querySelector('#btn_add_traces').addEventListener('click', (evt) => {
-        let field_name = document.querySelector('#trace_field_name_select').value
-        let ids = document.querySelector('#trace_field_index_input').value
-        ids = ids.split(',').map((e) => parseInt(e.trim()))
-
-        if (ids.length === 0 || isNaN(ids[0])) {
-            alert("Please provide the indices of the data to add.");
-            document.querySelector('#trace_field_index_input').focus();
-            return;
-        }
-
-        ids.forEach((id) => {
-            addTrace(field_name, id)
-        })
-    });
-
-    document.querySelector('#btn_remove_all_traces').addEventListener('click', (evt) => {
-        remove_all_traces();
+    document.querySelector('#btn_add_plot').addEventListener('click', (evt) => {
+        plot = new Plot()
     });
 
     document.querySelector('#btn_load_log_file').addEventListener('click', async (evt) => {
         const pickerOpts = {
             types: [
                 {
-                description: 'Images',
+                description: 'MIM Data Storage',
                 accept: {
-                    'image/*': ['.mds']
+                    'data/*': ['.mds']
                 }
                 },
             ],
@@ -261,9 +332,7 @@ function setup() {
         readDatafile(content)
     })
 
-    initPlot()
-    window.requestAnimationFrame(update_plot);
-
+    plot = new Plot()
 };
 
 setTimeout(setup, 1000)
