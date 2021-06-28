@@ -6,6 +6,7 @@ got_data = false
 max_len = 5000
 
 freeze_plot = false
+relayoutPlots = false
 stream_data = true
 scheduledRequestAnimationFrame = false
 
@@ -105,6 +106,46 @@ class Plot {
 
         Plotly.newPlot(this.domPlotDiv, lines, layout).then((res) => {
             this.plotDiv = res
+
+            // Setting up selection event.
+            res.on('plotly_relayout', function(evt) {
+                if (relayoutPlots) {
+                    return;
+                }
+                relayoutPlots = true;
+
+                let update = null;
+                if ("xaxis.range[0]" in evt) {
+                    update = {
+                        xaxis: {
+                            range: [
+                                evt["xaxis.range[0]"],
+                                evt["xaxis.range[1]"]
+                            ]
+                        },
+                        yaxis: {
+                            autorange: true
+                        }
+                    }
+                } else if ("xaxis.autorange" in evt) {
+                    update = {
+                        xaxis: {
+                            autorange: true
+                        },
+                        yaxis: {
+                            autorange: true
+                        }
+                    }
+                }
+
+                if (update) {
+                    plots.forEach((plt) => {
+                        Plotly.relayout(plt.plotDiv, update);
+                    })
+                }
+
+                relayoutPlots = false;
+            })
         })
     }
 
