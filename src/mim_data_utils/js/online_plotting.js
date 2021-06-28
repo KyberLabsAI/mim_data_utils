@@ -164,13 +164,22 @@ class Plot {
             layout: {}
         }, {
             transition: {
-                duration: 1,
-                easing: 'cubic-in-out'
+                duration: 0
             },
             frame: {
-                duration: 1
+                duration: 0,
             }
         })
+
+        let update = {
+            xaxis: {
+                autorange: true
+            },
+            yaxis: {
+                autorange: true
+            }
+        }
+        Plotly.relayout(this.plotDiv, update);
     }
 
 
@@ -247,14 +256,19 @@ function parseData(data) {
 }
 
 function update_plot() {
-    scheduledRequestAnimationFrame = false
-
     if (got_data) {
+        got_data = false
         plots.forEach((plt) => plt.updateTraces())
+
+
     }
+
+    window.requestAnimationFrame(update_plot);
 }
 
 function readDatafile(binaryBuffer) {
+    got_data = true
+
     // Ungzip the datafile.
     let binData = new Uint8Array(binaryBuffer);
     var data = pako.inflate(binData);
@@ -334,12 +348,11 @@ function setup() {
 
     stream_data = true
     ws.onmessage = function (event) {
-        parseData(event.data)
-        got_data = true
-        if (!scheduledRequestAnimationFrame) {
-            scheduledRequestAnimationFrame = true
-            window.requestAnimationFrame(update_plot);
-        }
+        console.log('got data');
+        parseData(event.data);
+        // When the plot is not frozen, indicate that there is new data to trigger
+        // a relayout.
+        got_data = !freeze_plot;
     };
     ws.onerror = function (event) {
         stream_data = false
@@ -374,6 +387,9 @@ function setup() {
     })
 
     plot = new Plot()
+
+    // Start the rendering process.
+    window.requestAnimationFrame(update_plot);
 };
 
 setTimeout(setup, 1000)
