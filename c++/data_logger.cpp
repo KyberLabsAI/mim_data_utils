@@ -49,7 +49,7 @@ protected:
     void WriteHeader();
 
     std::vector<FieldDefinition> fields;
-    std::ofstream fh;
+    gzFile file;
 
     bool wrote_head;
 
@@ -59,10 +59,11 @@ protected:
 };
 
 DataLogger::DataLogger(std::string filepath)
-: fh(filepath, std::ios::out | std::ios::trunc | std::ios::binary),
-  wrote_head(false)
+: wrote_head(false)
 {
     int ret;
+
+    file = gzopen(filepath.c_str(), "w");
 
     // Preallocate to be realtime safe later on.
     fields.reserve(MAX_FIELDS);
@@ -87,35 +88,10 @@ void DataLogger::WriteHeader()
 
     // Write the header.
     unsigned int header[2] = {0, fields.size()};
-    // Specify the compression input and size.
-    zlib_strm.avail_in = sizeof(header); // size of input
-    zlib_strm.next_in = (Bytef *)&header; // input char array
-    zlib_strm.avail_out = chunck_size; // size of output
-    zlib_strm.next_out = (Bytef *)zlib_buffer; // output char array
+    gzwrite(file, (const char *)&header, sizeof(header));
 
-    ret = deflate(&zlib_strm, Z_PARTIAL_FLUSH);
-    assert(ret != Z_STREAM_ERROR);  // state not clobbered
-
-
-    // Write the field data.
-    have = chunck_size - zlib_strm.avail_out;
-    fh.write((const char *)&zlib_buffer, have);
-
-    // Specify the compression input and size.
-    zlib_strm.avail_in = sizeof(FieldDefinition) * fields.size(); // size of input
-    zlib_strm.next_in = (Bytef *)fields.data(); // input char array
-
-    // Loop till all input is compressed.
-    do {
-        zlib_strm.avail_out = chunck_size; // size of output
-        zlib_strm.next_out = (Bytef *)zlib_buffer; // output char array
-
-        ret = deflate(&zlib_strm, Z_PARTIAL_FLUSH);
-        assert(ret != Z_STREAM_ERROR);  // state not clobbered
-
-        have = chunck_size - zlib_strm.avail_out;
-        fh.write((const char *)&zlib_buffer, have);
-    } while (zlib_strm.avail_out == 0);
+    // Write the file data.
+    gzwrite(file, (const char *)fields.data(), sizeof(FieldDefinition) * fields.size());
 }
 
 int DataLogger::AddField(std::string field_name, int field_size)
@@ -178,27 +154,13 @@ void DataLogger::EndTimestep()
         total_field_size += fields[i].size;
     }
 
-    // Specify the compression input and size.
-    zlib_strm.avail_in = sizeof(float) * total_field_size; // size of input
-    zlib_strm.next_in = (Bytef *)&output_buffer; // input char array
-
-    // Loop till all input is compressed.
-    do {
-        zlib_strm.avail_out = chunck_size; // size of output
-        zlib_strm.next_out = (Bytef *)zlib_buffer; // output char array
-
-        ret = deflate(&zlib_strm, Z_PARTIAL_FLUSH);
-        assert(ret != Z_STREAM_ERROR);  // state not clobbered
-
-        have = chunck_size - zlib_strm.avail_out;
-        fh.write((const char *)&zlib_buffer, have);
-    } while (zlib_strm.avail_out == 0);
+    gzwrite(file, (const char *)&output_buffer, sizeof(float) * total_field_size);
 }
 
 void DataLogger::CloseFile()
 {
     (void)deflateEnd(&zlib_strm);
-    fh.close();
+    gzclose(file);
 }
 
 
