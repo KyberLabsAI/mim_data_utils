@@ -189,8 +189,6 @@ class Plot {
         this.displayedFieldNames = [];
         this.displayedFieldData = [];
         this.displayedTraces = [];
-
-        this.domSelectFieldName.innerHTML = '';
     }
 
     addField(fieldName, fieldSize) {
