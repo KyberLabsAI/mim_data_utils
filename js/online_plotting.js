@@ -12,6 +12,63 @@ scheduledRequestAnimationFrame = false
 
 plots = []
 
+function parseFieldIndex(str, fieldSize)
+{
+    let errorMsg = '';
+    let ids = str.split(',').map((e) => e.trim());
+    let parseIds = []
+
+    for (let id of ids) {
+        let match, start, stop, step;
+        // Test for start-stop-step:
+        if (match = /^(\d+)\s*:\s*(\d+)\s*:\s*(\d+)$/.exec(id)) {
+            start = parseInt(match[1]);
+            stop = Math.min(parseInt(match[2]), fieldSize);
+            step = parseInt(match[3]);
+
+        // Test for start-step
+        } else if (match = /^(\d+)\s*:\s*:\s*(\d+)$/.exec(id)) {
+            start = parseInt(match[1]);
+            stop = fieldSize;
+            step = parseInt(match[2]);
+
+        // Test for start-stop
+        } else if (match = /^(\d+)\s*:\s*(\d+)$/.exec(id)) {
+            start = parseInt(match[1]);
+            stop = parseInt(match[2]);
+            step = 1;
+
+        // Test for single number:
+        } else if (match = /^(\d+)$/.exec(id)) {
+            start = parseInt(match[1]);
+            stop = start + 1
+            step = 1
+        } else {
+            errorMsg = 'Unable to parse indexing "' + id + '"';
+        }
+
+        if (start >= fieldSize || start < 0) {
+            errorMsg = 'Start index "' + start + '" out of bounds';
+            break;
+        }
+
+        if (step < 0) {
+            errorMsg = 'Only supporting positive step index';
+            break;
+        }
+
+        // Add the ids to the list.
+        for (let i = start; i < stop; i += step) {
+            parseIds.push(i);
+        }
+    }
+
+    return [parseIds, errorMsg]
+}
+
+// console.log(parseFieldIndex(' 1 ', 12))
+
+
 class Plot {
     constructor(domId) {
         this.domId = domId;
@@ -49,11 +106,16 @@ class Plot {
 
         this.domBtnAddTrace.addEventListener('click', (evt) => {
             let fieldName = this.domSelectFieldName.value
-            let ids = this.domTraceFieldIndexInput.value
-            ids = ids.split(',').map((e) => parseInt(e.trim()))
+            let [ids, errorMsg] = parseFieldIndex(
+                this.domTraceFieldIndexInput.value, plot_data[fieldName].length);
+
+            if (errorMsg) {
+                alert(errorMsg);
+                return;
+            }
 
             if (ids.length === 0 || isNaN(ids[0])) {
-                alert("Please provide the indices of the data to add.");
+                alert("Please provide valid indices of the data to add.");
                 document.querySelector('#trace_field_index_input').focus();
                 return;
             }
@@ -257,8 +319,6 @@ function update_plot() {
     if (got_data) {
         got_data = false
         plots.forEach((plt) => plt.updateTraces())
-
-
     }
 
     window.requestAnimationFrame(update_plot);
