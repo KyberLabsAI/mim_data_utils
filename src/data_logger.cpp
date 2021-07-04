@@ -1,62 +1,6 @@
-#include <stdio.h>
-#include <string.h>
-#include <assert.h>
-#include <iostream>
-#include <vector>
-#include <cstring>
-#include <fstream>
-#include <iostream>
-
-#include "zlib.h"
-#include <Eigen/Dense>
-
-// Resouces:
-// - https://gist.github.com/arq5x/5315739
-// - http://www.zlib.net/zlib_how.html
-
-// Maimum number of fields the DataLogger can hold.
-#define MAX_FIELDS 1024
-
-// 256 kb
-#define CHUNK_SIZE 256000
+#include "mim_data_utils/data_logger.hpp"
 
 namespace mim_data_utils {
-
-struct FieldDefinition
-{
-    unsigned char name[64];
-    int size;
-};
-
-class DataLogger
-{
-public:
-    DataLogger(std::string filepath);
-
-    int AddField(std::string field_name, int field_size);
-
-    void InitFile();
-
-    void CloseFile();
-
-    void BeginTimestep();
-
-    void Log(int field_id, Eigen::Ref<Eigen::VectorXd> value);
-
-    void EndTimestep();
-
-protected:
-    void WriteHeader();
-
-    std::vector<FieldDefinition> fields;
-    gzFile file;
-
-    bool wrote_head;
-
-    unsigned char zlib_buffer[CHUNK_SIZE];
-    unsigned char output_buffer[CHUNK_SIZE];
-    z_stream zlib_strm;
-};
 
 DataLogger::DataLogger(std::string filepath)
 : wrote_head(false)
@@ -163,31 +107,32 @@ void DataLogger::CloseFile()
     gzclose(file);
 }
 
-
 } // namespace mim_data_util
 
-int main()
-{
-    mim_data_utils::DataLogger dl("output.mds");
-    int fld_jp = dl.AddField("joint_positions", 4);
-    int fld_jv = dl.AddField("joint_velocities", 6);
-    int fld_sp = dl.AddField("slider_positions", 2);
+// Example usage.
 
-    dl.BeginTimestep();
+// int main()
+// {
+//     mim_data_utils::DataLogger dl("output.mds");
+//     int fld_jp = dl.AddField("joint_positions", 4);
+//     int fld_jv = dl.AddField("joint_velocities", 6);
+//     int fld_sp = dl.AddField("slider_positions", 2);
 
-    Eigen::VectorXd joint_positions(4);
-    joint_positions << 1., 2., 3., 4.;
+//     dl.BeginTimestep();
 
-    Eigen::VectorXd joint_velocities(6);
-    joint_velocities << 5., 6., 7., 8., 9., 10.;
+//     Eigen::VectorXd joint_positions(4);
+//     joint_positions << 1., 2., 3., 4.;
 
-    Eigen::VectorXd slider_positions(2);
-    slider_positions << 11., 12.;
+//     Eigen::VectorXd joint_velocities(6);
+//     joint_velocities << 5., 6., 7., 8., 9., 10.;
 
-    dl.Log(fld_jp, joint_positions);
-    dl.Log(fld_jv, joint_velocities);
-    dl.Log(fld_sp, slider_positions);
+//     Eigen::VectorXd slider_positions(2);
+//     slider_positions << 11., 12.;
 
-    dl.EndTimestep();
-    dl.CloseFile();
-}
+//     dl.Log(fld_jp, joint_positions);
+//     dl.Log(fld_jv, joint_velocities);
+//     dl.Log(fld_sp, slider_positions);
+
+//     dl.EndTimestep();
+//     dl.CloseFile();
+// }
