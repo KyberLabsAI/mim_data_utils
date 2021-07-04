@@ -38,6 +38,12 @@ function parseFieldIndex(str, fieldSize)
             stop = parseInt(match[2]);
             step = 1;
 
+        // Test for stop only
+        } else if (match = /^:\s*(\d+)$/.exec(id)) {
+            start = 0;
+            stop = parseInt(match[1]);
+            step = 1;
+
         // Test for single number:
         } else if (match = /^(\d+)$/.exec(id)) {
             start = parseInt(match[1]);
