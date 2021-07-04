@@ -163,7 +163,10 @@ class Plot {
                 b: 50,
                 t: 50,
                 pad: 4
-            }
+            },
+            showline: true,
+            hovermode: 'x',
+            shapes: []
         };
 
         Plotly.newPlot(this.domPlotDiv, lines, layout).then((res) => {
@@ -206,6 +209,35 @@ class Plot {
                     })
                 }
 
+                relayoutPlots = false;
+            })
+
+            res.on('plotly_hover', function(data) {
+                relayoutPlots = true;
+                // Update the cursor on all plots.
+                for (let plot of plots) {
+                    let layout = plot.plotDiv.layout
+                    if (layout.shapes.length === 0) {
+                        var cursor1 = {
+                            xid: 1,
+                            type: 'line',
+                            // x-reference is assigned to the x-values
+                            // xref: 'x',
+                            // // y-reference is assigned to the plot paper [0,1]
+                            // yref: 'paper',
+                            fillcolor: '#d3d3d3',
+                            opacity: 0.1,
+                        };
+                        layout.shapes.push(cursor1);
+                    }
+                    var update = {
+                        'shapes[0].x0': data.points[0].x,
+                        'shapes[0].x1': data.points[0].x,
+                        'shapes[0].y0': layout.yaxis.range[0]+1,
+                        'shapes[0].y1': layout.yaxis.range[1]-1
+                    };
+                    Plotly.relayout(plot.plotDiv, update);
+                }
                 relayoutPlots = false;
             })
         })
