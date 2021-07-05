@@ -3,7 +3,7 @@ plot_data_x = [] // Use a single array for all the x data.
 plot_data = {}
 
 got_data = false
-max_len = 5000
+max_len = 1000
 
 freeze_plot = false
 relayoutPlots = false
@@ -322,7 +322,7 @@ function handleField(field_name, field_data) {
     let field_plot_data = plot_data[field_name];
 
     // Remove data if we have logged too much.
-    let shift_data = stream_data && plot_data_x.length > max_len;
+    let shift_data = stream_data && field_plot_data[0].y.length > max_len;
 
     for (i = 0; i < fieldSize; i++) {
         field_plot_data[i].y.push(parseFloat(parsed[i]));
