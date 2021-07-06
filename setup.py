@@ -52,7 +52,7 @@ for (root, _, files) in walk(path.join("examples")):
 setup(
     name=package_name,
     version="1.0.0",
-    package_dir={package_name: path.join("src", package_name)},
+    package_dir={package_name: path.join("python", package_name)},
     packages=[package_name],
     package_data={package_name: resources},
     scripts=scripts_list,
