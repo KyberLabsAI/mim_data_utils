@@ -26,22 +26,28 @@ function parseFieldIndex(str, fieldSize)
             stop = Math.min(parseInt(match[2]), fieldSize);
             step = parseInt(match[3]);
 
-        // Test for start-step
+        // Test for start-step.
         } else if (match = /^(\d+)\s*:\s*:\s*(\d+)$/.exec(id)) {
             start = parseInt(match[1]);
             stop = fieldSize;
             step = parseInt(match[2]);
 
-        // Test for start-stop
+        // Test for start-stop.
         } else if (match = /^(\d+)\s*:\s*(\d+)$/.exec(id)) {
             start = parseInt(match[1]);
             stop = parseInt(match[2]);
             step = 1;
 
-        // Test for stop only
+        // Test for stop only.
         } else if (match = /^:\s*(\d+)$/.exec(id)) {
             start = 0;
             stop = parseInt(match[1]);
+            step = 1;
+
+        // Test for start only.
+        } else if (match = /^\s*(\d+):$/.exec(id)) {
+            start = parseInt(match[1]);
+            stop = fieldSize;
             step = 1;
 
         // Test for single number:
