@@ -74,6 +74,71 @@ function parseFieldIndex(str, fieldSize)
 
 // console.log(parseFieldIndex(' 1 ', 12))
 
+function findXDataRange(xFrom, xTo)
+{
+    let xIdxFrom, xIdxTo;
+    for (xIdxFrom = 0; xIdxFrom < plot_data_x.length; xIdxFrom++) {
+        if (plot_data_x[xIdxFrom] >= xFrom) {
+            xIdxFrom -= 1;
+            break;
+        }
+    }
+
+    xIdxTo = xIdxFrom + 1
+    for (xIdxTo; xIdxTo < plot_data_x.length; xIdxTo++) {
+        if (plot_data_x[xIdxTo] >= xTo) {
+            break;
+        }
+    }
+
+    return [xIdxFrom, xIdxTo]
+}
+
+function updatePlotLayouts(update, xIdxFrom, xIdxTo) {
+    plots.forEach((plt) => {
+        // For each visible line, loop over the y data and find
+        // min max values.
+        let ymin = Number.MAX_VALUE, ymax = Number.MIN_VALUE;
+        for (let line of plt.plotDiv.data) {
+            if (line.visible === undefined || line.visible === true) {
+                let dataY = line.y
+                for (let i = xIdxFrom; i < xIdxTo; i++) {
+                    if (dataY[i] < ymin) {
+                        ymin = dataY[i];
+                    }
+                    if (dataY[i] > ymax) {
+                        ymax = dataY[i];
+                    }
+                }
+            }
+        }
+
+        if (ymin == Number.MAX_VALUE && ymax == Number.MIN_VALUE) {
+            update.yaxis = { autorange: true };
+        } else {
+            let margin = 0.05 * (ymax - ymin) // Add 5% on each side.
+            update.yaxis = { range: [ymin - margin, ymax + margin] }
+        }
+
+        console.log(update.yaxis);
+
+        Plotly.relayout(plt.plotDiv, update);
+    });
+}
+
+function force_update() {
+    // Take the x range from the first plot and hope it exists always.
+    let layout = plots[0].plotDiv.layout;
+    repaint_update = {
+        xaxis: layout.xaxis,
+    }
+    reapint_data = findXDataRange(
+        layout.xaxis.range[0], layout.xaxis.range[1])
+
+    relayoutPlots = true;
+    updatePlotLayouts(layout, reapint_data[0], reapint_data[1]);
+    relayoutPlots = false;
+}
 
 class Plot {
     constructor(domId) {
@@ -129,14 +194,18 @@ class Plot {
             ids.forEach((id) => {
                 this.addTrace(fieldName, id)
             })
+
+
+            force_update();
         });
 
         this.domBtnRemoveTraces.addEventListener('click', (evt) => {
             this.removeAllTraces();
+            force_update();
         });
 
         this.domBtnRemovePlot.addEventListener('click', (evt) => {
-            this.removePlot()
+            this.removePlot();
         })
     }
 
@@ -170,13 +239,38 @@ class Plot {
                 t: 50,
                 pad: 4
             },
-            // showline: true,
+            showline: true,
             // hovermode: 'x',
             shapes: []
         };
 
+
         Plotly.newPlot(this.domPlotDiv, lines, layout).then((res) => {
             this.plotDiv = res
+
+            let repaint_update = null;
+            let reapint_data = []
+
+            // Clicking on the legend to toggle a line does not result in an
+            // update right away. Therefore, whenenver the mouse goes up,
+            // force layout-range-update on the next afterplot event (see below).
+            this.domPlotDiv.addEventListener('mouseup', function(evt) {
+                repaint_update = {
+                    xaxis: res.layout.xaxis,
+                }
+                reapint_data = findXDataRange(
+                    res.layout.xaxis.range[0], res.layout.xaxis.range[1])
+            })
+
+            res.on('plotly_afterplot', function() {
+                if (repaint_update) {
+                    let layout = repaint_update;
+                    repaint_update = null;
+                    relayoutPlots = true;
+                    updatePlotLayouts(layout, reapint_data[0], reapint_data[1]);
+                    relayoutPlots = false;
+                }
+            })
 
             // Setting up selection event.
             res.on('plotly_relayout', function(evt) {
@@ -185,6 +279,7 @@ class Plot {
                 }
                 relayoutPlots = true;
 
+                let xIdxFrom, xIdxTo;
                 let update = null;
                 if ("xaxis.range[0]" in evt) {
                     update = {
@@ -198,6 +293,11 @@ class Plot {
                             autorange: true
                         }
                     }
+
+                    let res = findXDataRange(
+                        evt["xaxis.range[0]"], evt["xaxis.range[1]"]);
+                    xIdxFrom = res[0]
+                    xIdxTo = res[1]
                 } else if ("xaxis.autorange" in evt) {
                     update = {
                         xaxis: {
@@ -207,45 +307,46 @@ class Plot {
                             autorange: true
                         }
                     }
+
+                    xIdxFrom = 0;
+                    xIdxTo = plot_data_x.length;
                 }
 
                 if (update) {
-                    plots.forEach((plt) => {
-                        Plotly.relayout(plt.plotDiv, update);
-                    })
+                    updatePlotLayouts(update, xIdxFrom, xIdxTo);
                 }
 
                 relayoutPlots = false;
             })
 
-            // res.on('plotly_hover', function(data) {
-            //     relayoutPlots = true;
-            //     // Update the cursor on all plots.
-            //     for (let plot of plots) {
-            //         let layout = plot.plotDiv.layout
-            //         if (layout.shapes.length === 0) {
-            //             var cursor1 = {
-            //                 xid: 1,
-            //                 type: 'line',
-            //                 // x-reference is assigned to the x-values
-            //                 // xref: 'x',
-            //                 // // y-reference is assigned to the plot paper [0,1]
-            //                 // yref: 'paper',
-            //                 fillcolor: '#d3d3d3',
-            //                 opacity: 0.1,
-            //             };
-            //             layout.shapes.push(cursor1);
-            //         }
-            //         var update = {
-            //             'shapes[0].x0': data.points[0].x,
-            //             'shapes[0].x1': data.points[0].x,
-            //             'shapes[0].y0': layout.yaxis.range[0]+0.01,
-            //             'shapes[0].y1': layout.yaxis.range[1]-0.01
-            //         };
-            //         Plotly.relayout(plot.plotDiv, update);
-            //     }
-            //     relayoutPlots = false;
-            // })
+            res.on('plotly_hover', function(data) {
+                relayoutPlots = true;
+                // Update the cursor on all plots.
+                for (let plot of plots) {
+                    let layout = plot.plotDiv.layout
+                    if (layout.shapes.length === 0) {
+                        var cursor1 = {
+                            xid: 1,
+                            type: 'line',
+                            // x-reference is assigned to the x-values
+                            // xref: 'x',
+                            // // y-reference is assigned to the plot paper [0,1]
+                            // yref: 'paper',
+                            fillcolor: '#d3d3d3',
+                            opacity: 0.1,
+                        };
+                        layout.shapes.push(cursor1);
+                    }
+                    var update = {
+                        'shapes[0].x0': data.points[0].x,
+                        'shapes[0].x1': data.points[0].x,
+                        'shapes[0].y0': layout.yaxis.range[0]+0.01,
+                        'shapes[0].y1': layout.yaxis.range[1]-0.01
+                    };
+                    Plotly.relayout(plot.plotDiv, update);
+                }
+                relayoutPlots = false;
+            })
         })
     }
 
