@@ -68,9 +68,10 @@ class DataLogger:
 
 
 class DataReader:
-    def __init__(self, filepath, read_data=True):
+    def __init__(self, filepath, read_data=True, suppress_output=True):
         self.filepath = filepath
         self.fh = gzip.open(self.filepath, 'rb+')
+        self.suppress_output = suppress_output
 
         self.fields = []
         self.data = {}
@@ -86,7 +87,8 @@ class DataReader:
         byt = self.fh.read(8)
         self.idx, self.num_fields = struct.unpack('II', byt)
 
-        print('idx:', self.idx, 'fields:', self.num_fields)
+        if not self.suppress_output:
+            print('idx:', self.idx, 'fields:', self.num_fields)
 
 
     def read_fields(self):
@@ -100,7 +102,8 @@ class DataReader:
 
             self.chunck_size += size * data_size
 
-        print(self.fields)
+        if not self.suppress_output:
+            print(self.fields)
 
     def read_chunck(self, chunck_idx, data={}):
         """Reads a single chunck of data and returns it."""
