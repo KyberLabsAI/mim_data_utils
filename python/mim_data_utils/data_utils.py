@@ -68,7 +68,7 @@ class DataLogger:
 
 
 class DataReader:
-    def __init__(self, filepath, read_data=True, suppress_output=False):
+    def __init__(self, filepath, read_data=True, suppress_output=True):
         self.filepath = filepath
         self.fh = gzip.open(self.filepath, 'rb+')
         self.suppress_output = suppress_output
