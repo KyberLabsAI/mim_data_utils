@@ -153,6 +153,7 @@ class Plot {
         this.displayedFieldNames = []
         this.displayedFieldData = []
         this.displayedTraces = []
+        this.displayedFieldInfo = []
 
         plots.push(this)
 
@@ -360,6 +361,10 @@ class Plot {
         this.displayedFieldNames.push(fieldName + '[' + fieldIndex + ']');
         this.displayedFieldData.push(plot_data[fieldName][fieldIndex]);
         this.displayedTraces.push(this.displayedTraces.length)
+        this.displayedFieldInfo.push({
+            'fieldName': fieldName,
+            'fieldIndex': fieldIndex
+        })
 
         Plotly.addTraces(this.plotDiv, plot_data[fieldName][fieldIndex])
     }
@@ -396,6 +401,11 @@ class Plot {
         this.displayedFieldNames = [];
         this.displayedFieldData = [];
         this.displayedTraces = [];
+        this.displayedFieldInfo = []
+    }
+
+    removeAllFields() {
+        this.domSelectFieldName.innerText = '';
     }
 
     addField(fieldName, fieldSize) {
@@ -490,11 +500,16 @@ function readDatafile(binaryBuffer) {
     let num_fields = dv.getUint32(4, true);
     offset += 8;
 
+    // Store the plots displayedFieldInfo to restore after the load again.
+    let plots_display_field_info = plots.map((plot) => plot.displayedFieldInfo);
+
     // Reset the data as we will read new one.
     plot_data = {};
     plot_data_x = [];
 
     plots.forEach((plot) => plot.removeAllTraces())
+    plots.forEach((plot) => plot.removeAllFields())
+
 
     // Read the field data.
     for (let f = 0; f < num_fields; f++) {
@@ -544,6 +559,17 @@ function readDatafile(binaryBuffer) {
         // HACK: Assuem dt=0.001 for now.
         plot_data_x.push(i * 0.001);
     }
+
+    // Restore the displayed plots if they are in the data still.
+    plots_display_field_info.forEach((displayFieldInfo, plot_i) => {
+        displayFieldInfo.forEach((info) => {
+            let fieldName = info['fieldName'];
+            let fieldIndex = info['fieldIndex'];
+            if (fieldName in plot_data && fieldIndex in plot_data[fieldName]) {
+                plots[plot_i].addTrace(fieldName, fieldIndex);
+            }
+        })
+    });
 }
 
 function setup() {
@@ -570,6 +596,12 @@ function setup() {
         plot = new Plot()
     });
 
+    reload_file_handle = async (evt) => {
+        let file = await fileHandle.getFile();
+        content = await file.arrayBuffer();
+        readDatafile(content)
+    }
+
     document.querySelector('#btn_load_log_file').addEventListener('click', async (evt) => {
         const pickerOpts = {
             types: [
@@ -584,10 +616,10 @@ function setup() {
             multiple: false
         };
         [fileHandle] = await window.showOpenFilePicker(pickerOpts);
-        let file = await fileHandle.getFile();
-        content = await file.arrayBuffer();
-        readDatafile(content)
+        reload_file_handle()
     })
+
+    document.querySelector('#btn_reload_log_file').addEventListener('click', reload_file_handle)
 
     plot = new Plot()
 
