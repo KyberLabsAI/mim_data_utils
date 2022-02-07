@@ -78,8 +78,6 @@ function parseFieldIndex(str, fieldSize)
     return [parseIds, errorMsg]
 }
 
-// console.log(parseFieldIndex(' 1 ', 12))
-
 function findXDataRange(xFrom, xTo)
 {
     let xIdxFrom, xIdxTo;
@@ -125,8 +123,6 @@ function updatePlotLayouts(update, xIdxFrom, xIdxTo) {
             let margin = 0.05 * (ymax - ymin) // Add 5% on each side.
             update.yaxis = { range: [ymin - margin, ymax + margin] }
         }
-
-        console.log(update.yaxis);
 
         Plotly.relayout(plt.plotDiv, update);
     });
@@ -248,7 +244,26 @@ class Plot {
             },
             showline: true,
             // hovermode: 'x',
-            shapes: []
+            shapes: [{
+                xid: plots.length + 1,
+                type: 'line',
+                // x-reference is assigned to the x-values
+                xref: 'x',
+                // // y-reference is assigned to the plot paper [0,1]
+                yref: 'paper',
+                fillcolor: '#d3d3d3',
+                opacity: 0.1,
+                x0: 0,
+                x1: 0,
+                y0: 0.,
+                y1: 1.
+            }],
+            legend: {
+                yanchor: "top",
+                y: 0.99,
+                xanchor: "right",
+                x: 0.99
+            }
         };
 
 
@@ -331,24 +346,10 @@ class Plot {
                 // Update the cursor on all plots.
                 for (let plot of plots) {
                     let layout = plot.plotDiv.layout
-                    if (layout.shapes.length === 0) {
-                        var cursor1 = {
-                            xid: 1,
-                            type: 'line',
-                            // x-reference is assigned to the x-values
-                            // xref: 'x',
-                            // // y-reference is assigned to the plot paper [0,1]
-                            // yref: 'paper',
-                            fillcolor: '#d3d3d3',
-                            opacity: 0.1,
-                        };
-                        layout.shapes.push(cursor1);
-                    }
+
                     var update = {
                         'shapes[0].x0': data.points[0].x,
                         'shapes[0].x1': data.points[0].x,
-                        'shapes[0].y0': layout.yaxis.range[0]+0.01,
-                        'shapes[0].y1': layout.yaxis.range[1]-0.01
                     };
                     Plotly.relayout(plot.plotDiv, update);
                 }
