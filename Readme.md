@@ -13,6 +13,8 @@ We rely on [plotly](https://plotly.com/) for the plotting part. We use the [webs
 ```
 $ pip install websockets
 ```
+## Link to see the plots (works only in chrome)
+https://machines-in-motion.github.io/mim_data_utils/
 
 ## Examples
 
