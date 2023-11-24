@@ -198,17 +198,19 @@ class Plot {
                 this.addTrace(fieldName, id)
             })
 
-
+            setUrlHashFromPlots();
             force_update();
         });
 
         this.domBtnRemoveTraces.addEventListener('click', (evt) => {
             this.removeAllTraces();
+            setUrlHashFromPlots();
             force_update();
         });
 
         this.domBtnRemovePlot.addEventListener('click', (evt) => {
             this.removePlot();
+            setUrlHashFromPlots();
         })
     }
 
@@ -367,7 +369,7 @@ class Plot {
             'fieldIndex': fieldIndex
         })
 
-        Plotly.addTraces(this.plotDiv, plot_data[fieldName][fieldIndex])
+        Plotly.addTraces(this.plotDiv, plot_data[fieldName][fieldIndex]);
     }
 
     updateTraces() {
@@ -402,7 +404,7 @@ class Plot {
         this.displayedFieldNames = [];
         this.displayedFieldData = [];
         this.displayedTraces = [];
-        this.displayedFieldInfo = []
+        this.displayedFieldInfo = [];
     }
 
     removeAllFields() {
@@ -416,6 +418,43 @@ class Plot {
         option.value = fieldName
         this.domSelectFieldName.appendChild(option)
     }
+}
+
+function setUrlHashFromPlots() {
+    let searchParams = new URLSearchParams(document.location.search)
+
+    let hash = '';
+
+    plots.forEach((plot, idx) => {
+        let displayed = {};
+        plot.displayedFieldInfo.forEach(info => {
+            if (info.fieldName in displayed) {
+            displayed[info.fieldName].push(info.fieldIndex);
+          } else {
+            displayed[info.fieldName] = [info.fieldIndex];
+          }
+        });
+
+        let plotFields = ''
+        fields = Object.keys(displayed);
+        fields.forEach(fieldName => {
+            let indices = displayed[fieldName];
+
+            if (plotFields != '') {
+                plotFields += ';'
+            }
+
+            plotFields += fieldName + '=' + indices;
+        });
+
+        if (hash != '') {
+            hash += '&';
+        }
+
+        hash += 'plot' + idx + ':' + plotFields;
+    });
+
+    document.location.hash = '#' + hash;
 }
 
 function handleField(field_name, field_data) {
@@ -573,13 +612,68 @@ function readDatafile(binaryBuffer) {
     });
 }
 
+let lastUrlHash = '';
+function rebuildPlotsFromUrlHash() {
+    // Remove all plots.
+    plots.forEach(plot => plot.removePlot());
+
+    // Parse the current hash.
+    let plotParts = location.hash.substring(1).split('&');
+
+    let plotArray = [];
+
+    plotParts.forEach(plotPart => {
+        let parts = plotPart.split(':');
+        let plotId = parseInt(parts[0].substring(4), 10);
+        plotArray[plotId] = {};
+
+        let fields = parts[1].split(';');
+        fields.forEach(field => {
+            let parts = field.split('=');
+            plotArray[plotId][parts[0]] = parts[1].split(',').map(entry => parseInt(entry, 10));
+        });
+    });
+
+    for (let i = 0; i < plotArray.length; i++) {
+        new Plot();
+    }
+
+    let restorePlotTraces = () => {
+        for (let i = 0; i < plotArray.length; i++) {
+            let plotData = plotArray[i];
+            let plot = plots[i];
+            if (plotData) {
+                Object.keys(plotData).forEach(fieldName => {
+                    if (!(fieldName in plot_data)) {
+                        return;
+                    }
+
+                    let fieldIndices = plotData[fieldName];
+                    fieldIndices.forEach(index => {
+                        plot.addTrace(fieldName, index);
+                    })
+                })
+            }
+        }
+    }
+    setTimeout(restorePlotTraces, 0);
+}
+
 function setup() {
     var ws = new WebSocket("ws://127.0.0.1:5678/");
 
     stream_data = true
     ws.onmessage = function (event) {
-        console.log('got data');
+        // console.log('got data');
         parseData(event.data);
+
+        // Check if the UrlHash has changed since last check. This can happen when
+        // the page gets reloaded and first new data arrives.
+        if (lastUrlHash != location.href) {
+            lastUrlHash = location.href;
+            rebuildPlotsFromUrlHash();
+        }
+
         // When the plot is not frozen, indicate that there is new data to trigger
         // a relayout.
         got_data = !freeze_plot;
@@ -600,7 +694,14 @@ function setup() {
     reload_file_handle = async (evt) => {
         let file = await fileHandle.getFile();
         content = await file.arrayBuffer();
-        readDatafile(content)
+        readDatafile(content);
+
+        // Check if the UrlHash has changed since last check. This can happen when
+        // the page gets reloaded and first new data arrives.
+        if (lastUrlHash != location.href) {
+            lastUrlHash = location.href;
+            rebuildPlotsFromUrlHash();
+        }
     }
 
     document.querySelector('#btn_load_log_file').addEventListener('click', async (evt) => {
@@ -628,4 +729,4 @@ function setup() {
     window.requestAnimationFrame(update_plot);
 };
 
-setTimeout(setup, 1000)
+setTimeout(setup, 0)
