@@ -3,12 +3,16 @@ plot_data_x = [] // Use a single array for all the x data.
 plot_data = {}
 
 got_data = false
-max_len = 1000
+max_len = 2000
 
 freeze_plot = false
 relayoutPlots = false
 stream_data = true
 scheduledRequestAnimationFrame = false
+
+displayLoadedFile = false;
+
+let domPlotConfig;
 
 plots = []
 
@@ -361,6 +365,10 @@ class Plot {
     }
 
     addTrace(fieldName, fieldIndex) {
+        if (!(fieldName in plot_data) || fieldIndex >= plot_data[fieldName].length) {
+            return;
+        }
+
         this.displayedFieldNames.push(fieldName + '[' + fieldIndex + ']');
         this.displayedFieldData.push(plot_data[fieldName][fieldIndex]);
         this.displayedTraces.push(this.displayedTraces.length)
@@ -421,8 +429,6 @@ class Plot {
 }
 
 function setUrlHashFromPlots() {
-    let searchParams = new URLSearchParams(document.location.search)
-
     let hash = '';
 
     plots.forEach((plot, idx) => {
@@ -454,7 +460,10 @@ function setUrlHashFromPlots() {
         hash += 'plot' + idx + ':' + plotFields;
     });
 
-    document.location.hash = '#' + hash;
+    domPlotConfig.value = hash;
+
+    // Avoid rebuilding plots due to url hash change.
+    lastUrlHash == location.href
 }
 
 function handleField(field_name, field_data) {
@@ -525,6 +534,13 @@ function readDatafile(binaryBuffer) {
     // Ungzip the datafile.
     let binData = new Uint8Array(binaryBuffer);
     var data = pako.inflate(binData);
+
+    if (!data) {
+        alert("Not able to parse the file as gzip. Was the file closed properly?");
+        return;
+    }
+
+    displayLoadedFile = true;
 
     // Create a dataview on the data for easier reading of values.
     let dv = new DataView(data.buffer);
@@ -612,13 +628,16 @@ function readDatafile(binaryBuffer) {
     });
 }
 
-let lastUrlHash = '';
-function rebuildPlotsFromUrlHash() {
+function rebuildPlotsFromConfig() {
+    lastUrlHash = domPlotConfig.value;
+
+    localStorage.setItem("plotConfig", lastUrlHash);
+
     // Remove all plots.
     plots.forEach(plot => plot.removePlot());
 
     // Parse the current hash.
-    let plotParts = location.hash.substring(1).split('&');
+    let plotParts = domPlotConfig.value.split('&');
 
     let plotArray = [];
 
@@ -626,6 +645,11 @@ function rebuildPlotsFromUrlHash() {
         let parts = plotPart.split(':');
         let plotId = parseInt(parts[0].substring(4), 10);
         plotArray[plotId] = {};
+
+        // Ignore empty plots.
+        if (parts[1] == '') {
+            return;
+        }
 
         let fields = parts[1].split(';');
         fields.forEach(field => {
@@ -662,16 +686,20 @@ function rebuildPlotsFromUrlHash() {
 function setup() {
     var ws = new WebSocket("ws://127.0.0.1:5678/");
 
+    stream_first_data = true;
     stream_data = true
     ws.onmessage = function (event) {
+        if (displayLoadedFile) {
+            return;
+        }
+
         // console.log('got data');
         parseData(event.data);
 
-        // Check if the UrlHash has changed since last check. This can happen when
-        // the page gets reloaded and first new data arrives.
-        if (lastUrlHash != location.href) {
-            lastUrlHash = location.href;
-            rebuildPlotsFromUrlHash();
+        // Rebuild plots if needed.
+        if (stream_first_data) {
+            stream_first_data = false;
+            rebuildPlotsFromConfig();
         }
 
         // When the plot is not frozen, indicate that there is new data to trigger
@@ -696,12 +724,8 @@ function setup() {
         content = await file.arrayBuffer();
         readDatafile(content);
 
-        // Check if the UrlHash has changed since last check. This can happen when
-        // the page gets reloaded and first new data arrives.
-        if (lastUrlHash != location.href) {
-            lastUrlHash = location.href;
-            rebuildPlotsFromUrlHash();
-        }
+        // Rebuild plots if needed.
+        rebuildPlotsFromConfig();
     }
 
     document.querySelector('#btn_load_log_file').addEventListener('click', async (evt) => {
@@ -724,6 +748,16 @@ function setup() {
     document.querySelector('#btn_reload_log_file').addEventListener('click', reload_file_handle)
 
     plot = new Plot()
+
+    domPlotConfig = document.getElementById("plotConfig");
+    domPlotConfig.addEventListener("keydown", evt => {
+        if (evt.keyCode == 13) {
+            rebuildPlotsFromConfig();
+        }
+    })
+
+    plotConfig = localStorage.getItem("plotConfig") || "plot0:"
+    domPlotConfig.value = plotConfig;
 
     // Start the rendering process.
     window.requestAnimationFrame(update_plot);
