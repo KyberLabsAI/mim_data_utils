@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <div>
+    <p style="margin:0 0 2px 0">
+      <b>Plotting Tool</b>
+      <select style="width:150px" id="addOptions">
+        <option value="$add">Add trace...</option>
+        <option value="$newPlot">New Plot</option>
+        <option value="sin">sin[1]</option>
+      </select>
+      <button onclick="loadDataFile()">Load data file</button>
+      <button onclick="loadFileContent()">Reload file</button>
+      <button onclick="connectViaWebSocket()">Start streaming</button>
+      <!-- <button onclick="updateLayout()">Refresh Layout</button>
+      <button onclick="onRefreshDerivedClick()">Refresh Derived</button> -->
+      <button onclick="freeze()">Freeze</button>
+    </p>
+  </div>
+  <div style="margin-bottom:10px">
+
+    <textarea id="layout" style="width:800px;font-size:1em" value="xlim=[-3,-0]; plots=sin[0],msin[0]/msin[0]"></textarea>
+  <div id="plots">
+  </div>
+  <script id="vertex" type="x-shader/x-vertex">
+    #version 300 es
+    precision lowp float;
+
+    uniform vec2 u_offset;
+    uniform mat2 u_transformCenter;
+    uniform vec4 u_color;
+    uniform float u_z;
+
+    in vec2 lineCenter;
+    in vec2 lineTangential;
+    out vec4 v_color;
+
+    void main() {
+      float lineWidth = 1.;
+      mat2 viewport2pixel = mat2(400, 0, 0, 200);
+
+      mat2 transformTangential = mat2(u_transformCenter[1][1], 0, 0, u_transformCenter[0][0]);
+      vec2 tangentialViewport = transformTangential * lineTangential;
+      tangentialViewport.x = tangentialViewport.x * 0.25; // <- magic scaling factor?
+
+      vec2 tangentialPixel = viewport2pixel * tangentialViewport;
+      vec2 lwTangential = (lineWidth / length(tangentialPixel)) * tangentialViewport;
+
+      gl_Position = vec4(
+        (u_transformCenter * (lineCenter.xy + u_offset) + lwTangential).xy,
+        u_z, 1
+      );
+      v_color = u_color;
+    }
+  </script>
+
+  <script id="fragment" type="x-shader/x-fragment">
+    #version 300 es
+    precision lowp float;
+
+    in vec4 v_color;
+    out vec4 fragColor;
+
+    void main() {
+      fragColor = v_color;
+    }
+  </script>
+  <script src="lib/pako.js"></script>
+
+  <script src="js/axes.js"></script>
+  <script src="js/line.js"></script>
+  <script src="js/plot.js"></script>
+  <script src="js/traces.js"></script>
+  <script src="js/data_sources.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
