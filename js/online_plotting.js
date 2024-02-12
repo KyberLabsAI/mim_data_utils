@@ -3,7 +3,7 @@ plot_data_x = [] // Use a single array for all the x data.
 plot_data = {}
 
 got_data = false
-max_len = 2000
+max_len = 5000
 
 freeze_plot = false
 relayoutPlots = false
@@ -684,6 +684,16 @@ function rebuildPlotsFromConfig() {
 }
 
 function setup() {
+    domPlotConfig = document.getElementById("plotConfig");
+    domPlotConfig.addEventListener("keydown", evt => {
+        if (evt.keyCode == 13) {
+            rebuildPlotsFromConfig();
+        }
+    })
+
+    plotConfig = localStorage.getItem("plotConfig") || "plot0:"
+    domPlotConfig.value = plotConfig;
+
     var ws = new WebSocket("ws://127.0.0.1:5678/");
 
     stream_first_data = true;
@@ -749,18 +759,8 @@ function setup() {
 
     plot = new Plot()
 
-    domPlotConfig = document.getElementById("plotConfig");
-    domPlotConfig.addEventListener("keydown", evt => {
-        if (evt.keyCode == 13) {
-            rebuildPlotsFromConfig();
-        }
-    })
-
-    plotConfig = localStorage.getItem("plotConfig") || "plot0:"
-    domPlotConfig.value = plotConfig;
-
     // Start the rendering process.
     window.requestAnimationFrame(update_plot);
 };
 
-setTimeout(setup, 0)
+setTimeout(setup, 1)
