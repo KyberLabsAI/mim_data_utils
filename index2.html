@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
-<body>
-  <div>
+<body style="margin:0">
+  <div style="position: sticky; top: 0; padding: 4px 8px 4px 8px; background: white; z-index: 1;">
     <p style="margin:0 0 2px 0">
       <b>Plotting Tool</b>
       <select style="width:150px" id="addOptions">
@@ -14,14 +14,11 @@
       <button onclick="connectViaWebSocket()">Start streaming</button>
       <!-- <button onclick="updateLayout()">Refresh Layout</button>
       <button onclick="onRefreshDerivedClick()">Refresh Derived</button> -->
-      <button onclick="freeze()">Freeze</button>
+      <button onclick="freeze()">Freeze</button><br>
+      <textarea id="layout" style="width:800px;font-size:1em" value="xlim=[-3,-0]; plots=sin[0],msin[0]/msin[0]"></textarea>
     </p>
   </div>
-  <div style="margin-bottom:10px">
-
-    <textarea id="layout" style="width:800px;font-size:1em" value="xlim=[-3,-0]; plots=sin[0],msin[0]/msin[0]"></textarea>
   <div id="plots">
-  </div>
   <script id="vertex" type="x-shader/x-vertex">
     #version 300 es
     precision lowp float;
