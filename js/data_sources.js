@@ -21,7 +21,7 @@ function connectViaWebSocket(hideError) {
     let firstData = true;
     ws.onmessage = function (event) {
         if (firstData) {
-            isFrozen = false;
+            freeze(false);
             traces.clear();
         }
 

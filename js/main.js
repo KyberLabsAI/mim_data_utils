@@ -69,6 +69,11 @@ function updatePlotViewport() {
             ylim[1] += yspace;
         }
 
+        if (ylim[1] - ylim[0] < 1e-4) {
+            ylim[1] = 0.01;
+            ylim[0] = -0.01;
+        }
+
         plot.setViewport(xlim[0], ylim[0], xlim[1], ylim[1]);
     });
 
@@ -130,7 +135,7 @@ function updateLayout() {
             if (part.to !== undefined) {
                 to = parseInt(part.to, 10);
             } else {
-                to = from + 1;
+                to = dataSize;
             }
 
             if (from >= dataSize || to > dataSize) {
@@ -161,10 +166,10 @@ layoutDom.addEventListener('keydown', (evt) => {
     }
 });
 
-let derivedVal = document.getElementById('derived').value;
+// let derivedVal = document.getElementById('derived').value;
 
-// ttData, dtData, this.timestepData, idx
-let derivedFn = Function('data', 'derived', 'fullData', 'index', derivedVal);
+// // ttData, dtData, this.timestepData, idx
+// let derivedFn = Function('data', 'derived', 'fullData', 'index', derivedVal);
 
 // traces.setDerivedFn(derivedFn);
 
@@ -214,8 +219,11 @@ function eventCallback(type, evt) {
     }
 }
 
-let isFrozen = false;
-function freeze() {
+var isFrozen = false;
+function freeze(newValue) {
+    if (newValue !== undefined) {
+        isFrozen = !newValue; // Negate as will be negated once more below.
+    }
     if (!isFrozen) {
         let axesDrawer = plots[0].axesDrawer
         layout.zoomX = [axesDrawer.xFrom, axesDrawer.xTo];
