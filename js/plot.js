@@ -57,6 +57,7 @@ class Plot {
 
     clear() {
         this.lines = [];
+        this.legend.textContent = '';
     }
 
     addLine(label, lineData, style) {
@@ -86,13 +87,17 @@ class Plot {
         this.axesDrawer.draw();
 
         if (this.lastDataVersion != dataVersion) {
-            this.lines.forEach(line => {
-                let xlimIndices = line.lineData.findXLimIndices(xlim);
-                let chuncks = line.lineData.chuncks;
-                for (let idx = xlimIndices.from.chunckIdx; idx <= xlimIndices.to.chunckIdx; idx++) {
-                    this.lineDrawer.drawLineChunck(chuncks[idx], line.style)
-                }
-            });
+            if (this.lines.length == 0) {
+                this.lineDrawer.clear();
+            } else {
+                this.lines.forEach(line => {
+                    let xlimIndices = line.lineData.findXLimIndices(xlim);
+                    let chuncks = line.lineData.chuncks;
+                    for (let idx = xlimIndices.from.chunckIdx; idx <= xlimIndices.to.chunckIdx; idx++) {
+                        this.lineDrawer.drawLineChunck(chuncks[idx], line.style)
+                    }
+                });
+            }
 
             this.lastDataVersion = dataVersion;
         }

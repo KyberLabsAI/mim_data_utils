@@ -261,6 +261,11 @@ class GLLineDrawer {
         gl.vertexAttribPointer(attributeLineCenter, size, gl.FLOAT, false, 0, 0);
     }
 
+    clear() {
+        let gl = this.ctx.gl;
+        gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
     drawLineChunck(lineChunck, style) {
         let gl = this.ctx.gl;
         let canvas = this.ctx.canvas;

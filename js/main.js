@@ -94,13 +94,33 @@ function updateLayout() {
         let parts = [];
         while (plotDef.length > 0) {
             let match = plotDef.match(/(([^\[]+)\[([^\]]*)\],*)/);
-            let details = match[3].match(/^(\d+)?(:(\d+)?)?(,(.+))?/)
-            parts.push({
-                name: match[2],
-                from: details[1],
-                to: details[3],
-                style: details[5]
+            match[3].split(',').forEach(bit => {
+                let details = bit.match(/^(\d+)?(:(\d+)?)?/);
+
+                let from, to;
+
+                if (details[2] === undefined) { // No ":" detected. Single number.
+                    if (details[1] === undefined) {
+                        // If there is no colon and no first number, then ignore this
+                        // entry as not valid.
+                        return;
+                    }
+
+                    from = parseInt(details[1], 10);
+                    to = from + 1;
+                } else { // There is a colon. From and to defined from nubmer if any.
+                    from = details[1];
+                    to = details[3];
+                }
+
+                parts.push({
+                    name: match[2],
+                    from: from,
+                    to: to,
+                    style: ''
+                });
             });
+
             plotDef = plotDef.slice(match[0].length);
         }
         return parts;
@@ -127,11 +147,10 @@ function updateLayout() {
         let colorIdx = 0;
 
         plotParts.forEach((part, partIdx) => {
-            let from = 0;
             let dataSize = traces.getDataSize(part.name);
-            if (part.from !== undefined) {
-                from = parseInt(part.from, 10);
-            }
+
+            let from = parseInt(part.from || '0', 10);
+            let to;
             if (part.to !== undefined) {
                 to = parseInt(part.to, 10);
             } else {
@@ -148,7 +167,7 @@ function updateLayout() {
                 plot.addLine(
                     `${part.name}[${idx}]`,
                     traces.getLineData(part.name, idx),
-                    {r: color[0]/256, g: color[1]/256, b: color[2]/256, z:-idx * 0.001});
+                    {r: color[0]/256, g: color[1]/256, b: color[2]/256, z:-colorIdx * 0.001});
             }
         });
 
@@ -163,6 +182,8 @@ function updateLayout() {
 layoutDom.addEventListener('keydown', (evt) => {
     if (evt.key == "Enter") {
         updateLayout();
+        evt.preventDefault();
+        return false;
     }
 });
 
@@ -236,7 +257,6 @@ function freeze(newValue) {
 }
 
 
-updateLayout();
 
 let draw = () => {
     requestAnimationFrame(draw);
@@ -244,37 +264,26 @@ let draw = () => {
     plots.forEach(plot => plot.draw(xlim, layoutVersion));
 }
 
-draw();
-// setInterval(draw, 10);
-
 function firstNewData() {
     hasData = true;
     updateSignals();
     updateLayout();
 }
 
-// // let val = [0, -1, -1, 0];
-// // let val = [0, -1, 0, -1, 0];
-// // let t = [0, 1, 2, 12, 22]
 
-// let val = [0, 1, 1];
-// let t = [0, 1, 2];
+let counter = 600;
+let addSampleData = () => {
+    traces.beginTimestep(counter * 0.001);
+    traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
+    traces.endTimestep();
+    counter += 1;
 
-// val.forEach((v, i) => {
-//     traces.beginTimestep(t[i]);
-//     traces.record('F', [v]);
-//     traces.endTimestep();
-// });
+    setTimeout(addSampleData, 1);
+}
+addSampleData();
 
 firstNewData();
-
-// let counter = 600;
-// setInterval(() => {
-//     traces.beginTimestep(counter * 0.001);
-//     traces.record('F', [Math.random()]);
-//     traces.endTimestep();
-//     counter += 1;
-// }, 1)
+draw();
 
 function updateSignals() {
     addOptions.innerHTML = '<option value="$add">Add trace...</option>';
