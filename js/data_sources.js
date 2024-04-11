@@ -44,7 +44,7 @@ function connectViaWebSocket(hideError) {
         }
 
         setTimeout(() => {
-            if (!firstData) {
+            if (firstData) {
                 connectViaWebSocket(true);
             }
         }, 1000);

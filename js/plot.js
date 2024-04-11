@@ -12,7 +12,7 @@ class Plot {
         let legend = this.legend = document.createElement('span');
 
         let width = 800;
-        let height = 400;
+        let height = 300;
 
         let style = `width:${width}px;height:${height}px;position:absolute`;
 

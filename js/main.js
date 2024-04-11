@@ -202,11 +202,13 @@ function eventCallback(type, evt) {
             if (Math.abs(mouseDownX - evt.offsetX) > 2) {
                 layout.zoomX = mouseDownPos < mouseUpPos ? [mouseDownPos, mouseUpPos] : [mouseUpPos, mouseDownPos];
                 updatePlotViewport();
+                freeze(true);
             }
             break;
 
         case "AxesDrawer::dblclick":
             layout.zoomX = null;
+            freeze(false);
             updatePlotViewport();
             evt.preventDefault();
             break;
