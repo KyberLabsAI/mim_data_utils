@@ -38,6 +38,7 @@ function connectViaWebSocket(hideError) {
         if (firstData) {
             firstData = false;
             firstNewData();
+            updateLayoutXLim('[-5, -0]');
         }
     };
     ws.onerror = function (event) {
@@ -122,6 +123,8 @@ function readDatafile(binaryBuffer) {
 
         traces.endTimestep();
     }
+
+    updateLayoutXLim(`[${traces.getFirstTime()}, ${traces.getLastTime()}]`);
 }
 
 let loadedFile = null;

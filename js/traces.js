@@ -70,6 +70,14 @@ class Traces {
         }
     }
 
+    getFirstTime() {
+        if (this.timestepData.length == 0) {
+            return 0;
+        } else {
+            return this.timestepData[0].get('time')[0];
+        }
+    }
+
     getLastTime() {
         if (this.timestepData.length == 0) {
             return 0;

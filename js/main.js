@@ -30,8 +30,14 @@ let parseArray = (str) => {
     return str.slice(1, str.length - 1).split(',').map((val => parseFloat(val)));
 }
 
+function isZeroNegative(val) {
+    let isZero = val === 0;
+    isNegative = 1 / val === -Infinity;
+    return isZero && isNegative;
+}
+
 function updatePlotViewport() {
-    let xlim = parseArray(layout.xlim || '[-0.5,-0]');
+    let xlim = parseArray(layout.xlim);
 
     // Zoom setting overwrites the xlim setting.
     if (layout.zoomX) {
@@ -39,7 +45,7 @@ function updatePlotViewport() {
     } else {
         // Adjust the view if needed.
         for (let i = 0; i < 2; i++) {
-            if (xlim[i] < 0.0000001) {
+            if (xlim[i] < 0 || isZeroNegative(xlim[i])) {
                 xlim[i] = Math.max(0, traces.getLastTime() + xlim[i]);
             }
         }
@@ -81,12 +87,17 @@ function updatePlotViewport() {
     return xlim;
 }
 
+let updateLayoutXLim = (xlim) => {
+    layoutDom.value = `plots=${layout['plots']}; xlim=${xlim}`;
+    updateLayout();
+}
+
 function updateLayout() {
     localStorage.setItem('layout', layoutDom.value);
 
     layoutDom.value.replaceAll(' ', '').split(';').forEach(bit => {
         let [lhs, rhs] = bit.split('=');
-        layout[lhs] = rhs
+        layout[lhs] = rhs;
     });
 
     // Update the plots if needed.
@@ -271,16 +282,16 @@ function firstNewData() {
 }
 
 
-let counter = 600;
-let addSampleData = () => {
-    traces.beginTimestep(counter * 0.001, 2000);
-    traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
-    traces.endTimestep();
-    counter += 1;
+// let counter = 600;
+// let addSampleData = () => {
+//     traces.beginTimestep(counter * 0.001, 2000);
+//     traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
+//     traces.endTimestep();
+//     counter += 1;
 
-    setTimeout(addSampleData, 1);
-}
-addSampleData();
+//     setTimeout(addSampleData, 1);
+// }
+// addSampleData();
 
 firstNewData();
 draw();
