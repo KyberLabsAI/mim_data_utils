@@ -56,7 +56,6 @@ let va_prototype = new VectorArray();
 class Traces {
     constructor(callbackFn) {
         this.callbackFn = callbackFn;
-        this.maxData = 10000;
         this.clear(true);
     }
 
@@ -79,11 +78,11 @@ class Traces {
         }
     }
 
-    willEvictFirstData() {
-        return this.timestepData.length == this.maxData - 1;
+    willEvictFirstData(maxData) {
+        return this.timestepData.length == maxData - 1;
     }
 
-    beginTimestep(time) {
+    beginTimestep(time, maxData) {
         this.time = time;
 
         let timestepMap = new Map();
@@ -91,7 +90,7 @@ class Traces {
         this.timestepData.push(timestepMap);
         this.derivedData.push(new Map());
 
-        if (this.timestepData.length >= this.maxData) {
+        while (maxData && this.timestepData.length >= maxData) {
             this.timestepData.shift();
             this.derivedData.shift();
 

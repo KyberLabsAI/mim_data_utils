@@ -1,8 +1,10 @@
+let wsMaxData = 10000
+
 function parsewebSocketData(data) {
     data = JSON.parse(data);
     let t = parseFloat(data['time']);
 
-    traces.beginTimestep(t);
+    traces.beginTimestep(t, wsMaxData);
 
     for (let [key, value] of Object.entries(data)) {
         if (key === 'time') {
@@ -27,7 +29,7 @@ function connectViaWebSocket(hideError) {
 
         // Ignore new data in case the view is frozen and there is no space
         // in the traces object left.
-        if (isFrozen && traces.willEvictFirstData()) {
+        if (isFrozen && traces.willEvictFirstData(wsMaxData)) {
             return;
         }
 
