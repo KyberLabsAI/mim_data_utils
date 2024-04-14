@@ -17,8 +17,9 @@ function parsewebSocketData(data) {
     traces.endTimestep();
 }
 
+let ws = null;
 function connectViaWebSocket(hideError) {
-    var ws = new WebSocket("ws://127.0.0.1:5678/");
+    ws = new WebSocket("ws://127.0.0.1:5678/");
 
     let firstData = true;
     ws.onmessage = function (event) {
@@ -55,6 +56,10 @@ function connectViaWebSocket(hideError) {
 }
 
 function readDatafile(binaryBuffer) {
+    if (ws) {
+        ws.close();
+    }
+
     got_data = true
 
     // Ungzip the datafile.
@@ -127,8 +132,7 @@ function readDatafile(binaryBuffer) {
     updateLayoutXLim(`[${traces.getFirstTime()}, ${traces.getLastTime()}]`);
 }
 
-let loadedFile = null;
-function loadFileContent() {
+function loadFileContent(loadedFile) {
     loadedFile.arrayBuffer().then((content) => {
         traces.clear();
         readDatafile(content);
@@ -151,8 +155,40 @@ async function loadDataFile() {
     };
     let [fileHandle] = await window.showOpenFilePicker(pickerOpts);
     let file = await fileHandle.getFile();
-    loadedFile = file;
-    loadFileContent();
+    loadFileContent(file);
 }
 
 
+let dropArea = document.body;
+
+// Drag and drop handling.
+['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    dropArea.addEventListener(eventName, preventDefaults, false);
+})
+
+function preventDefaults (e) {
+    e.preventDefault();
+    e.stopPropagation();
+}
+
+['dragenter', 'dragover'].forEach(eventName => {
+    dropArea.addEventListener(eventName, highlight, false);
+});
+
+['dragleave', 'drop'].forEach(eventName => {
+    dropArea.addEventListener(eventName, unhighlight, false);
+});
+
+function highlight(e) {
+    dropArea.classList.add('highlight');
+}
+
+function unhighlight(e) {
+    dropArea.classList.remove('highlight');
+}
+
+dropArea.addEventListener('drop', handleDrop, false);
+
+function handleDrop(e) {
+    loadFileContent(e.dataTransfer.files[0]);
+}

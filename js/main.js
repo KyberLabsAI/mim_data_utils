@@ -293,16 +293,16 @@ function firstNewData() {
 }
 
 
-let counter = 600;
-let addSampleData = () => {
-    traces.beginTimestep(counter * 0.001, 2000);
-    traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
-    traces.endTimestep();
-    counter += 1;
+// let counter = 600;
+// let addSampleData = () => {
+//     traces.beginTimestep(counter * 0.001, 2000);
+//     traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
+//     traces.endTimestep();
+//     counter += 1;
 
-    setTimeout(addSampleData, 1);
-}
-addSampleData();
+//     setTimeout(addSampleData, 1);
+// }
+// addSampleData();
 
 firstNewData();
 draw();
