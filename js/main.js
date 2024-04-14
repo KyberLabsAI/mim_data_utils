@@ -268,12 +268,23 @@ function freeze(newValue) {
 }
 
 
-
+let shouldResize = true; // Force resize on first draw.
 let draw = () => {
     requestAnimationFrame(draw);
+
+    if (shouldResize) {
+        shouldResize = false;
+        let width = domPlots.clientWidth;
+        plots.forEach(p => p.updateSize(width, 300));
+    }
+
     let xlim = updatePlotViewport();
     plots.forEach(plot => plot.draw(xlim, layoutVersion));
 }
+
+window.addEventListener('resize', (evt) => {
+    shouldResize = true;
+});
 
 function firstNewData() {
     hasData = true;
@@ -282,16 +293,16 @@ function firstNewData() {
 }
 
 
-// let counter = 600;
-// let addSampleData = () => {
-//     traces.beginTimestep(counter * 0.001, 2000);
-//     traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
-//     traces.endTimestep();
-//     counter += 1;
+let counter = 600;
+let addSampleData = () => {
+    traces.beginTimestep(counter * 0.001, 2000);
+    traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
+    traces.endTimestep();
+    counter += 1;
 
-//     setTimeout(addSampleData, 1);
-// }
-// addSampleData();
+    setTimeout(addSampleData, 1);
+}
+addSampleData();
 
 firstNewData();
 draw();
@@ -328,21 +339,3 @@ addOptions.addEventListener('change', evt => {
 
 })
 updateSignals();
-
-// Next:
-// - [x] Zoom onto detail when dragging area in plot.
-// - [x] Store layout text in local storage.
-// - [x] Add Pause/Unpause button.
-// - [x] Draw grid lines.
-// - [x] Add available signals in drop down.
-// - [x] Color the legend according to line colors.
-// - Hockup read websocket connection.
-// - Resize window and use full window width.
-// - Add layout history option.
-// - Draw visualization for zooming.
-//
-// - [x] Use different colors to plot lines.
-// - [x] Update layout and reset plots.
-
-
-// Debug

@@ -11,20 +11,7 @@ class Plot {
         let canvasAxes = this.canvasAxes = document.createElement('canvas');
         let legend = this.legend = document.createElement('span');
 
-        let width = 800;
-        let height = 300;
-
-        let style = `width:${width}px;height:${height}px;position:absolute`;
-
-        let setStyle= (canvas, width, height) => {
-            canvas.setAttribute('width', width);
-            canvas.setAttribute('height', height);
-            canvas.setAttribute('style', style);
-        }
-
-        setStyle(canvasGrid, 4 * width, 4 * height);
-        setStyle(canvasLine, width, height);
-        setStyle(canvasAxes, 4 * width, 4 * height);
+        this.updateCanvasStyle(domParent.clientWidth, 300);
 
         legend.setAttribute('style', 'position:absolute;right:20px;text-align:right;background:white');
 
@@ -32,10 +19,6 @@ class Plot {
         dom.appendChild(canvasLine);
         dom.appendChild(canvasAxes);
         dom.append(legend);
-
-        dom.style.position = 'relative';
-        dom.style.width = `${width}px`;
-        dom.style.height = `${height}px`;
 
         this.margin = [10, 20, 10, 20];
 
@@ -45,6 +28,38 @@ class Plot {
 
         this.lines = [];
         this.lastDataVersion = -1;
+    }
+
+    updateCanvasStyle(width, height) {
+        let dom = this.dom;
+        this.width = width;
+        this.height = height;
+        let style = `width:${width}px;height:${height}px;position:absolute`;
+
+        let setStyle = (canvas, width, height) => {
+            canvas.setAttribute('width', width);
+            canvas.setAttribute('height', height);
+            canvas.setAttribute('style', style);
+        }
+
+        setStyle(this.canvasGrid, 4 * width, 4 * height);
+        setStyle(this.canvasLine, width, height);
+        setStyle(this.canvasAxes, 4 * width, 4 * height);
+
+        dom.style.position = 'relative';
+        dom.style.width = `${width}px`;
+        dom.style.height = `${height}px`;
+    }
+
+    updateSize(width, height) {
+        if (this.width == width && this.height == height) {
+            return; // Only update if size changed.
+        }
+
+        this.updateCanvasStyle(width, height);
+        this.glDrawer.updateSize(width, height);
+        this.lineDrawer.updateSize(width, height);
+        this.axesDrawer.updateSize(width, height);
     }
 
     remove() {

@@ -42,6 +42,10 @@ class GLDrawer {
         this.vertexShader = vertexShader;
         this.fragmentShader = fragmentShader;
     }
+
+    updateSize(width, height) {
+        this.ctx.gl.viewport(0, 0, width, height);
+    }
 }
 
 // Holds the Float32 array with points, margin and color. Also holds the buffers.
@@ -289,6 +293,8 @@ class GLLineDrawer {
     }
 
     setViewport(xl, yl, xh, yh) {
+        this.viewport = [xl, yl, xh, yh];
+
         // Adjust for the margin. The margin is in view pixel space.
         let width = this.ctx.canvas.width;
         let height = this.ctx.canvas.height;
@@ -309,5 +315,9 @@ class GLLineDrawer {
         this.zoomY = 2 / this.ys;
         this.offsetX = -xl + shiftX  - 1 / this.zoomX;
         this.offsetY = -yl + shiftY - 1 / this.zoomY;
+    }
+
+    updateSize(width, height) {
+        this.setViewport.apply(this, this.viewport);
     }
 }

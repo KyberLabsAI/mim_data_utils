@@ -9,6 +9,11 @@ class TickDrawer {
         this.drawnTicks = new Map();
     }
 
+
+    setSize(size) {
+        this.drawSize = size;
+    }
+
     draw(from, to) {
         this.from = from;
         this.to = to;
@@ -78,20 +83,17 @@ class AxesDrawer {
     constructor(canvas, canvasGrid, margin, eventCallback) {
         this.canvas = canvas;
         this.ctx = canvas.getContext("2d");
-        this.ctx.font = "12px Helvetica";
-
         this.canvasGrid = canvasGrid;
         this.ctxGrid = canvasGrid.getContext("2d");
-        this.ctxGrid.strokeStyle = 'rgb(196, 196, 196)';
 
         this.margin = margin;
-        this.axisWidth = canvas.clientWidth - this.margin[1] - this.margin[3];
-        this.axisHeight = canvas.clientHeight - this.margin[0] - this.margin[2];
 
         this.tickDrawerX = new TickDrawer(
-            200, this.axisWidth, this.margin[3], true, this.drawTickX.bind(this));
+            200, 100, this.margin[3], true, this.drawTickX.bind(this));
         this.tickDrawerY = new TickDrawer(
-            100, this.axisHeight, this.margin[0], false, this.drawTickY.bind(this));
+            100, 100, this.margin[0], false, this.drawTickY.bind(this));
+
+        this.updateSize();
 
         this.mouseX = 0;
         this.mouseY = 0;
@@ -186,7 +188,7 @@ class AxesDrawer {
 
         if (this.tickDrawerY.drawnTicks.has(0)) {
             let pos0 = this.tickDrawerY.drawnTicks.get(0);
-            this.strokeLine(3, pos0, canvas.clientWidth - 3, pos0);
+            this.strokeLine(margin[3], pos0, this.axisWidth + margin[0], pos0);
         }
 
         // Draw the mouse layer.
@@ -194,7 +196,7 @@ class AxesDrawer {
         let valY = this.tickDrawerY.clientToTickText(this.mouseY);
 
         this.strokeLine(this.mouseX, margin[0] + this.axisHeight, this.mouseX, margin[0]);
-        this.strokeLine(margin[3], this.mouseY, margin[3] + this.axisWidth, this.mouseY);
+        this.strokeLine(margin[3], this.mouseY, margin[0] + this.axisWidth, this.mouseY);
 
         ctx.fillText(`(${valX}, ${valY})`, this.mouseX + 5, this.mouseY - 5)
 
@@ -209,5 +211,17 @@ class AxesDrawer {
     setViewportDraw(x0, y0, x1, y1) {
         this.setViewport(x0, y0, x1, y1);
         this.draw();
+    }
+
+    updateSize(width, height) {
+        this.ctx.font = "12px Helvetica";
+        this.ctxGrid.strokeStyle = 'rgb(196, 196, 196)';
+
+        let canvas = this.canvas;
+        this.axisWidth = canvas.clientWidth - this.margin[1] - this.margin[3];
+        this.axisHeight = canvas.clientHeight - this.margin[0] - this.margin[2];
+
+        this.tickDrawerX.setSize(this.axisWidth);
+        this.tickDrawerY.setSize(this.axisHeight);
     }
 }
