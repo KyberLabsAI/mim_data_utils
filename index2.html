@@ -4,17 +4,28 @@
   <div style="position: sticky; top: 0; padding: 4px 8px 4px 8px; background: white; z-index: 1;">
     <p style="margin:0 0 2px 0">
       <b>Plotting Tool</b>
-      <select style="width:150px" id="addOptions">
-        <option value="$add">Add trace...</option>
-        <option value="$newPlot">New Plot</option>
-        <option value="sin">sin[1]</option>
-      </select>
       <button onclick="loadDataFile()">Load data file</button>
       <button onclick="connectViaWebSocket()">Start streaming</button>
       <!-- <button onclick="updateLayout()">Refresh Layout</button>
       <button onclick="onRefreshDerivedClick()">Refresh Derived</button> -->
       <button onclick="freeze()">Freeze</button><br>
-      <textarea id="layout" style="width:100%;font-size:1em" value="xlim=[-3,-0]; plots=sin[0],msin[0]/msin[0]"></textarea>
+      <div style="display: flex;">
+        <span>Layout:</span>
+        <select id="xlimDom">
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="3">3 s</option>
+          <option value="5" selected="selected">5 s</option>
+          <option value="10">10 s</option>
+          <option value="20">20 s</option>
+        </select>
+        <select style="width:150px" id="addOptions">
+          <option value="$add">Add trace...</option>
+          <option value="$newPlot">New Plot</option>
+          <option value="sin">sin[1]</option>
+        </select>
+        <input id="layout" style="font-size:1em;flex: 1 1 auto" value="xlim=[-3,-0]; plots=sin[0],msin[0]/msin[0]"></input>
+      </div>
     </p>
   </div>
   <div id="plots">

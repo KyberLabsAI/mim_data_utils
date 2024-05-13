@@ -37,18 +37,14 @@ function isZeroNegative(val) {
 }
 
 function updatePlotViewport() {
-    let xlim = parseArray(layout.xlim);
-
+    let xlim = [0, 0];
     // Zoom setting overwrites the xlim setting.
     if (layout.zoomX) {
         xlim = layout.zoomX;
     } else {
-        // Adjust the view if needed.
-        for (let i = 0; i < 2; i++) {
-            if (xlim[i] < 0 || isZeroNegative(xlim[i])) {
-                xlim[i] = Math.max(0, traces.getLastTime() + xlim[i]);
-            }
-        }
+        let xValue = parseFloat(document.getElementById('xlimDom').value);
+        xlim[0] = Math.max(0, traces.getLastTime() - xValue);
+        xlim[1] = Math.max(0, traces.getLastTime());
 
         if (xlim[0] == xlim[1]) {
             xlim[1] += 1.;
@@ -87,21 +83,12 @@ function updatePlotViewport() {
     return xlim;
 }
 
-let updateLayoutXLim = (xlim) => {
-    layoutDom.value = `plots=${layout['plots']}; xlim=${xlim}`;
-    updateLayout();
-}
-
 function updateLayout() {
-    localStorage.setItem('layout', layoutDom.value);
-
-    layoutDom.value.replaceAll(' ', '').split(';').forEach(bit => {
-        let [lhs, rhs] = bit.split('=');
-        layout[lhs] = rhs;
-    });
+    plotLayout = layoutDom.value;
+    localStorage.setItem('layout', plotLayout);
 
     // Update the plots if needed.
-    let plotDefs = layout['plots'].split('/').map(plotDef => {
+    let plotDefs = plotLayout.split('/').map(plotDef => {
         let parts = [];
         while (plotDef.length > 0) {
             let match = plotDef.match(/(([^\[]+)\[([^\]]*)\],*)/);
@@ -208,6 +195,8 @@ layoutDom.addEventListener('keydown', (evt) => {
 let mouseDownPos = null;
 let mouseDownX = null;
 
+let ignoreMouseClick = false;
+
 function eventCallback(type, evt) {
     switch(type) {
         case "AxesDrawer::mousemove":
@@ -224,6 +213,7 @@ function eventCallback(type, evt) {
             break;
 
         case "AxesDrawer::mousedown":
+            freeze(true);
             mouseDownX = evt.offsetX;
             mouseDownPos = plots[0].axesDrawer.clientXToTick(evt.offsetX);
             evt.preventDefault();
@@ -235,6 +225,11 @@ function eventCallback(type, evt) {
                 layout.zoomX = mouseDownPos < mouseUpPos ? [mouseDownPos, mouseUpPos] : [mouseUpPos, mouseDownPos];
                 updatePlotViewport();
                 freeze(true);
+                evt.preventDefault();
+                ignoreMouseClick = true;
+            } else {
+                layout.zoomX = null;
+                updatePlotViewport();
             }
             break;
 
@@ -250,6 +245,7 @@ function eventCallback(type, evt) {
         case "Traces::clear":
             // updatePlotViewport();
             break;
+
     }
 }
 
@@ -293,16 +289,19 @@ function firstNewData() {
 }
 
 
-// let counter = 600;
-// let addSampleData = () => {
-//     traces.beginTimestep(counter * 0.001, 2000);
-//     traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
-//     traces.endTimestep();
-//     counter += 1;
+let counter = 600;
+let addSampleData = () => {
+    setTimeout(addSampleData, 1);
 
-//     setTimeout(addSampleData, 1);
-// }
-// addSampleData();
+    if (isFrozen) {
+        return;
+    }
+    traces.beginTimestep(counter * 0.001, 2000);
+    traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
+    traces.endTimestep();
+    counter += 1;
+}
+addSampleData();
 
 firstNewData();
 draw();
@@ -330,12 +329,12 @@ addOptions.addEventListener('change', evt => {
     if (!layoutDom.value.endsWith('=') && !layoutDom.value.endsWith('/')) {
         layoutDom.value += ',';
     }
-    layoutDom.value += value + '[]';
+    layoutDom.value += value + '[0]';
     layoutDom.focus();
 
     let val = layoutDom.value;
-    layoutDom.selectionStart = val.length - 1;
+    layoutDom.selectionStart = val.length - 2;
     layoutDom.selectionEnd = val.length - 1;
-
+    updateLayout();
 })
 updateSignals();

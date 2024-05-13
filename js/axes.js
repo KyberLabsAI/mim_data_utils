@@ -104,10 +104,10 @@ class AxesDrawer {
         let forwardEvent = (name, forwarded) => {
             canvas.addEventListener(name, (evt) => eventCallback(forwarded, evt));
         }
-        forwardEvent('mousemove', 'AxesDrawer::mousemove');
-        forwardEvent('mousedown', 'AxesDrawer::mousedown');
-        forwardEvent('mouseup', 'AxesDrawer::mouseup');
-        forwardEvent('dblclick', 'AxesDrawer::dblclick');
+
+        ['mousemove', 'mousedown', 'mouseup', 'dblclick', 'click'].forEach(name => {
+            forwardEvent(name, 'AxesDrawer::' + name);
+        });
     }
 
     strokeLine(x0, y0, x1, y1, ctx) {
