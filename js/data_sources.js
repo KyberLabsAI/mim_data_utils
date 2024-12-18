@@ -1,4 +1,4 @@
-let wsMaxData = 10000
+let wsMaxData = 30000
 
 function parsewebSocketData(data) {
     data = JSON.parse(data);
@@ -128,7 +128,8 @@ function readDatafile(binaryBuffer) {
         traces.endTimestep();
     }
 
-    updateLayoutXLim(`[${traces.getFirstTime()}, ${traces.getLastTime()}]`);
+    layout.zoomX = [traces.getFirstTime(), traces.getLastTime()]
+    updatePlotViewport();
 }
 
 function loadFileContent(loadedFile) {
