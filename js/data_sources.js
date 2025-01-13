@@ -1,4 +1,4 @@
-let wsMaxData = 30000
+let wsMaxData = 120000
 
 function parsewebSocketData(data) {
     data = JSON.parse(data);
