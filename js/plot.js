@@ -98,8 +98,12 @@ class Plot {
         this.lineDrawer.setViewport(xl, yl, xh, yh);
     }
 
-    draw(xlim, dataVersion) {
+    draw(xlim, dataVersion, axesOnly) {
         this.axesDrawer.draw();
+
+        if (axesOnly) {
+            return
+        }
 
         if (this.lastDataVersion != dataVersion) {
             if (this.lines.length == 0) {

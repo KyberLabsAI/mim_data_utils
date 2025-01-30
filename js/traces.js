@@ -64,6 +64,9 @@ class Traces {
         this.derivedData = [];
         this.derivedFn = null;
         this.lineDataNameMap = new Map();
+        this.data_idx = -1;
+        this.data_size = 0;
+        this.full_buffer = false;
 
         if (!supressEvent) {
             this.callbackFn('Traces::clear', this);
@@ -82,12 +85,12 @@ class Traces {
         if (this.timestepData.length == 0) {
             return 0;
         } else {
-            return this.timestepData.at(-1).get('time')[0];
+            return this.timestepData[this.data_idx].get('time')[0];
         }
     }
 
     willEvictFirstData(maxData) {
-        return this.timestepData.length == maxData - 1;
+        return this.timestepData.length >= maxData - 1;
     }
 
     beginTimestep(time, maxData) {
@@ -95,12 +98,17 @@ class Traces {
 
         let timestepMap = new Map();
         timestepMap.set('time', vectorify([time]));
-        this.timestepData.push(timestepMap);
-        this.derivedData.push(new Map());
 
-        while (maxData && this.timestepData.length >= maxData) {
-            this.timestepData.shift();
-            this.derivedData.shift();
+        if (this.data_size < maxData) {
+            this.timestepData.push(timestepMap);
+            this.derivedData.push(new Map());
+            this.data_idx += 1;
+            this.data_size += 1;
+        } else {
+            this.full_buffer = true;
+            let i = this.data_idx = (this.data_idx + 1) % this.data_size
+            this.timestepData[i] = timestepMap
+            this.derivedData[i] = new Map();
 
             for (let [name, ldnm] of this.lineDataNameMap) {
                 for (let [idx, lineData] of ldnm) {
@@ -111,7 +119,7 @@ class Traces {
     }
 
     record(name, value) {
-        this.timestepData.at(-1).set(name, vectorify([...value]));
+        this.timestepData[this.data_idx].set(name, vectorify([...value]));
     }
 
     computeDerivedData(idx, ttData, dtData) {
@@ -133,12 +141,12 @@ class Traces {
     endTimestep() {
         // Run the derivedFn function to compute the derived data.
         if (this.derivedFn) {
-            this.computeDerivedDataByIdx(this.timestepData.length - 1);
+            this.computeDerivedDataByIdx(this.data_idx);
         }
 
         // Add new data to the excisting lineDatas.
-        let lastTimestepData = this.timestepData.at(-1);
-        let lastDerivedData = this.derivedData.at(-1);
+        let lastTimestepData = this.timestepData[this.data_idx];
+        let lastDerivedData = this.derivedData[this.data_idx];
         let t = lastTimestepData.get('time')[0];
 
         for (let [name, ldnm] of this.lineDataNameMap) {
@@ -186,9 +194,19 @@ class Traces {
 
         lineData.clear();
 
-        for (let i = 0; i < len; i++) {
-            lineData.appendPoint(timestepData[i].get('time'), data[i].get(name)[index]);
+        if (this.full_buffer) {
+            let steps = 0;
+            while (steps < this.data_size) {
+                let idx = (this.data_idx + 1 + steps) % this.data_size;
+                lineData.appendPoint(timestepData[idx].get('time'), data[idx].get(name)[index]);
+                steps += 1;
+            }
+        } else {
+            for (let i = 0; i < len; i++) {
+                lineData.appendPoint(timestepData[i].get('time'), data[i].get(name)[index]);
+            }
         }
+
     }
 
     fillLineDataByNameIndex(lineData, name, index) {

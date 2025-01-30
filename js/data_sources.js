@@ -1,7 +1,6 @@
-let wsMaxData = 120000
+let wsMaxData = 1000 * 1000;
 
 function parsewebSocketData(data) {
-    data = JSON.parse(data);
     let t = parseFloat(data['time']);
 
     traces.beginTimestep(t, wsMaxData);
@@ -34,7 +33,7 @@ function connectViaWebSocket(hideError) {
             return;
         }
 
-        parsewebSocketData(event.data);
+        JSON.parse(event.data).forEach(parsewebSocketData);
 
         if (firstData) {
             firstData = false;
