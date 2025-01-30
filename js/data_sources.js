@@ -1,7 +1,17 @@
 let wsMaxData = 1000 * 1000;
 
+let lastTime = 0;
+
 function parsewebSocketData(data) {
     let t = parseFloat(data['time']);
+    let relayout = false;
+
+    if (Math.abs(t - lastTime) > 5) {
+        traces.clear();
+        relayout = true
+    }
+
+    lastTime = t;
 
     traces.beginTimestep(t, wsMaxData);
 
@@ -14,6 +24,10 @@ function parsewebSocketData(data) {
     }
 
     traces.endTimestep();
+
+    if (relayout) {
+        updateLayout();
+    }
 }
 
 let ws = null;
