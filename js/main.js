@@ -36,7 +36,7 @@ function isZeroNegative(val) {
     return isZero && isNegative;
 }
 
-function updatePlotViewport() {
+function getXLim() {
     let xlim = [0, 0];
     // Zoom setting overwrites the xlim setting.
     if (layout.zoomX) {
@@ -53,6 +53,12 @@ function updatePlotViewport() {
             xlim[1] += (xlim[1] - xlim[0]) * 0.01;
         }
     }
+
+    return xlim;
+}
+
+function updatePlotViewport() {
+    let xlim = getXLim();
 
     plots.forEach(plot => {
         let ylim;
@@ -197,6 +203,8 @@ let mouseDownX = null;
 
 let ignoreMouseClick = false;
 
+let zoomStack = [];
+
 function eventCallback(type, evt) {
     switch(type) {
         case "AxesDrawer::mousemove":
@@ -222,20 +230,22 @@ function eventCallback(type, evt) {
         case "AxesDrawer::mouseup":
             let mouseUpPos = plots[0].axesDrawer.clientXToTick(evt.offsetX);
             if (Math.abs(mouseDownX - evt.offsetX) > 2) {
+                zoomStack.push(getXLim())
                 layout.zoomX = mouseDownPos < mouseUpPos ? [mouseDownPos, mouseUpPos] : [mouseUpPos, mouseDownPos];
                 updatePlotViewport();
                 freeze(true);
                 evt.preventDefault();
                 ignoreMouseClick = true;
-            } else {
-                layout.zoomX = null;
-                updatePlotViewport();
             }
             break;
 
         case "AxesDrawer::dblclick":
-            layout.zoomX = null;
-            freeze(false);
+            if (zoomStack.length > 0) {
+                layout.zoomX = zoomStack.pop()
+            } else {
+                layout.zoomX = null;
+                freeze(false);
+            }
             updatePlotViewport();
             evt.preventDefault();
             break;
@@ -299,10 +309,10 @@ function firstNewData() {
 // let addSampleData = () => {
 //     setTimeout(addSampleData, 1);
 
-//     if (isFrozen) {
-//         return;
-//     }
-//     traces.beginTimestep(counter * 0.001, 2000);
+//     // if (isFrozen) {
+//     //     return;
+//     // }
+//     traces.beginTimestep(counter * 0.001, 200000);
 //     traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
 //     traces.endTimestep();
 //     counter += 1;
