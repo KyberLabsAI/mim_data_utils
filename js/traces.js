@@ -67,10 +67,16 @@ class Traces {
         this.data_idx = -1;
         this.data_size = 0;
         this.full_buffer = false;
+        this.staticData = new Map();
 
         if (!supressEvent) {
             this.callbackFn('Traces::clear', this);
         }
+    }
+
+    setStaticData(name, data) {
+        this.staticData[name] = data;
+        this.callbackFn('Traces::setStaticData', this, name);
     }
 
     getFirstTime() {
