@@ -96,19 +96,23 @@ class Traces {
     beginTimestep(time, maxData) {
         this.time = time;
 
-        let timestepMap = new Map();
+        let timestepMap;
+        if (this.data_size == 0) {
+            timestepMap = new Map();
+        } else {
+            timestepMap = new Map(this.timestepData[this.data_idx]);
+        }
+
         timestepMap.set('time', vectorify([time]));
 
         if (this.data_size < maxData) {
             this.timestepData.push(timestepMap);
             this.derivedData.push(new Map());
-            this.data_idx += 1;
             this.data_size += 1;
         } else {
             this.full_buffer = true;
-            let i = this.data_idx = (this.data_idx + 1) % this.data_size
-            this.timestepData[i] = timestepMap
-            this.derivedData[i] = new Map();
+            this.timestepData[this.data_idx] = timestepMap;
+            this.derivedData[this.data_idx] = new Map();
 
             for (let [name, ldnm] of this.lineDataNameMap) {
                 for (let [idx, lineData] of ldnm) {
@@ -116,6 +120,7 @@ class Traces {
                 }
             }
         }
+        this.data_idx = (this.data_idx + 1) % maxData;
     }
 
     record(name, value) {
