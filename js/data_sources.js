@@ -25,7 +25,11 @@ function parsewebSocketData(data) {
             continue;
         }
 
-        traces.record(key, value.slice(12, -2).split(', ').map(v => parseFloat(v)));
+        if (!Array.isArray(value)) {
+            value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
+        }
+
+        traces.record(key, value)
     }
 
     traces.endTimestep();
@@ -35,15 +39,23 @@ function parsewebSocketData(data) {
     }
 }
 
+let dataRecord = [];
+
 let ws = null;
 function connectViaWebSocket(hideError) {
     ws = new WebSocket("ws://127.0.0.1:5678/");
+
+    JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
+        JSON.parse(entries).forEach(parsewebSocketData);
+    });
+    firstNewData();
 
     let firstData = true;
     ws.onmessage = function (event) {
         if (firstData) {
             freeze(false);
             traces.clear();
+            dataRecord = []
         }
 
         // Ignore new data in case the view is frozen and there is no space
@@ -52,7 +64,11 @@ function connectViaWebSocket(hideError) {
             return;
         }
 
-        JSON.parse(event.data).forEach(parsewebSocketData);
+        let data = JSON.parse(event.data);
+        dataRecord.push(event.data);
+        localStorage.setItem('lastData', JSON.stringify(dataRecord));
+
+        data.forEach(parsewebSocketData);
 
         if (firstData) {
             firstData = false;

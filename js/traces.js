@@ -55,8 +55,12 @@ let va_prototype = new VectorArray();
 
 class Traces {
     constructor(callbackFn) {
-        this.callbackFn = callbackFn;
+        this.callbackFn = [callbackFn];
         this.clear(true);
+    }
+
+    callback(type, payload) {
+        this.callbackFn.forEach(fn => fn(type, this, payload));
     }
 
     clear(supressEvent) {
@@ -70,13 +74,13 @@ class Traces {
         this.staticData = new Map();
 
         if (!supressEvent) {
-            this.callbackFn('Traces::clear', this);
+            this.callback('Traces::clear')
         }
     }
 
     setStaticData(name, data) {
-        this.staticData[name] = data;
-        this.callbackFn('Traces::setStaticData', this, name);
+        this.staticData.set(name, data);
+        this.callback('Traces::setStaticData', name);
     }
 
     getFirstTime() {
@@ -170,7 +174,7 @@ class Traces {
             }
         }
 
-        this.callbackFn('Traces::endTimestep', this);
+        this.callback('Traces::endTimestep');
     }
 
     setDerivedFn(derivedFn) {
@@ -196,7 +200,7 @@ class Traces {
             }
         }
 
-        this.callbackFn('Traces::setDerivedFn', this);
+        this.callback('Traces::setDerivedFn');
     }
 
     fillLineData(lineData, data, name, index) {

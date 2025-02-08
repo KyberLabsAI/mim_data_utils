@@ -4,6 +4,7 @@ let layout = {
 };
 let hasData = false;
 let traces = new Traces(eventCallback);
+traces.callbackFn.push(event3DCallback)
 
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
@@ -94,7 +95,7 @@ function updateLayout() {
     localStorage.setItem('layout', plotLayout);
 
     // Update the plots if needed.
-    let plotDefs = plotLayout.split('/').map(plotDef => {
+    let plotDefs = plotLayout.split(';').map(plotDef => {
         let parts = [];
         while (plotDef.length > 0) {
             let match = plotDef.match(/(([^\[]+)\[([^\]]*)\],*)/);
@@ -236,6 +237,8 @@ function eventCallback(type, evt) {
                 freeze(true);
                 evt.preventDefault();
                 ignoreMouseClick = true;
+            } else {
+                viewer.setTime(mouseDownPos);
             }
             break;
 
@@ -353,4 +356,7 @@ addOptions.addEventListener('change', evt => {
     layoutDom.selectionEnd = val.length - 1;
     updateLayout();
 })
+
 updateSignals();
+connectViaWebSocket();
+animate();
