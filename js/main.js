@@ -238,7 +238,7 @@ function eventCallback(type, evt) {
                 evt.preventDefault();
                 ignoreMouseClick = true;
             } else {
-                viewer.setTime(mouseDownPos);
+                scene.setTime(mouseDownPos);
             }
             break;
 

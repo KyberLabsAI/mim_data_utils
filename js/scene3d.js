@@ -56,7 +56,7 @@ class Mesh3D {
     }
 }
 
-class Viewer3D {
+class Scene3D {
     constructor(container) {
         this.container = container;
         this.initScene();
@@ -181,7 +181,7 @@ const indices = [
 ];
 
 
-let viewer = new Viewer3D(document.getElementById('viewer'));
+let scene = new Scene3D(document.getElementById('viewer'));
 
 // let mesh = new Mesh3D('triangle', vertices, indices, 0x007bff, [1., 1., 1.])
 // viewer.addObject(mesh.buildObject());
@@ -203,7 +203,7 @@ let viewer = new Viewer3D(document.getElementById('viewer'));
 // }, 1000);
 
 let plane = new Plane3D('plane')
-viewer.addObject(plane)
+scene.addObject(plane)
 
 function addUpdateObject(data) {
     if (!(data.vertices instanceof Float32Array)) {
@@ -214,7 +214,7 @@ function addUpdateObject(data) {
     }
 
     // let mesh = new Mesh3D(data.name, data.vertices, data.indices, data.color, data.scale)
-    viewer.addObject(new Mesh3D('3d/sphere', data.vertices, data.indices, data.color, data.scale));
+    scene.addObject(new Mesh3D('3d/sphere', data.vertices, data.indices, data.color, data.scale));
 }
 
 function event3DCallback(type, evt, data) {
@@ -230,7 +230,7 @@ function event3DCallback(type, evt, data) {
 
 // Resize
 window.addEventListener('resize', () => {
-    viewer.resize()
+    scene.resize()
 });
 
 
@@ -238,5 +238,5 @@ window.addEventListener('resize', () => {
 function animate() {
     requestAnimationFrame(animate);
 
-    viewer.render();
+    scene.render();
 }

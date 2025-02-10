@@ -6,53 +6,6 @@ function assert(cond, desc) {
     }
 }
 
-function vectorify(value) {
-    value.__proto__ = va_prototype;
-    return value;
-}
-
-class VectorArray extends Array {
-    vecMap(valB, fn) {
-        if (typeof(valB) == 'number') {
-            return vectorify(this.map(val => fn(val, valB)))
-        } else {
-            assert(this.length == valB.length,
-                `Array.add: Length of vectors do not match (${this.length} vs ${valB.length}).`);
-
-            return vectorify(this.map((val, idx) => fn(val, valB[idx])))
-        }
-    }
-
-    add(valB) {
-        return this.vecMap(valB, (numA, numB) => numA + numB);
-    }
-
-    sub(valB) {
-        return this.vecMap(valB, (numA, numB) => numA - numB);
-    }
-
-    mul(valB) {
-        return this.vecMap(valB, (numA, numB) => numA * numB);
-    }
-
-    div(valB) {
-        return this.vecMap(valB, (numA, numB) => numA / numB);
-    }
-
-    dot(valB) {
-        assert(this.length == valB.length,
-            `Array.add: Length of vectors do not match (${this.length} vs ${valB.length}).`);
-
-        let sum = 0.;
-        for (let i = 0; i < this.length; i++) {
-            sum += this[i] * valB[i];
-        }
-        return sum;
-    }
-}
-
-let va_prototype = new VectorArray();
-
 class Traces {
     constructor(callbackFn) {
         this.callbackFn = [callbackFn];
@@ -65,8 +18,6 @@ class Traces {
 
     clear(supressEvent) {
         this.timestepData = [];
-        this.derivedData = [];
-        this.derivedFn = null;
         this.lineDataNameMap = new Map();
         this.data_idx = -1;
         this.data_size = 0;
@@ -113,16 +64,14 @@ class Traces {
             timestepMap = new Map(this.timestepData[this.data_idx]);
         }
 
-        timestepMap.set('time', vectorify([time]));
+        timestepMap.set('time', [time]);
 
         if (this.data_size < maxData) {
             this.timestepData.push(timestepMap);
-            this.derivedData.push(new Map());
             this.data_size += 1;
         } else {
             this.full_buffer = true;
             this.timestepData[this.data_idx] = timestepMap;
-            this.derivedData[this.data_idx] = new Map();
 
             for (let [name, ldnm] of this.lineDataNameMap) {
                 for (let [idx, lineData] of ldnm) {
@@ -134,73 +83,23 @@ class Traces {
     }
 
     record(name, value) {
-        this.timestepData[this.data_idx].set(name, vectorify([...value]));
-    }
-
-    computeDerivedData(idx, ttData, dtData) {
-        this.derivedFn(ttData, dtData, this.timestepData, idx);
-
-        // Convert single numbers to vectory instances for keeping consistent
-        // object shapes.
-        for (let [key, val] of dtData) {
-            if (typeof(val) == 'number') {
-                dtData.set(key, vectorify([val]));
-            }
-        }
-    }
-
-    computeDerivedDataByIdx(idx) {
-        this.computeDerivedData(idx, this.timestepData[idx], this.derivedData[idx]);
+        this.timestepData[this.data_idx].set(name, value);
     }
 
     endTimestep() {
-        // Run the derivedFn function to compute the derived data.
-        if (this.derivedFn) {
-            this.computeDerivedDataByIdx(this.data_idx);
-        }
-
         // Add new data to the excisting lineDatas.
         let lastTimestepData = this.timestepData[this.data_idx];
-        let lastDerivedData = this.derivedData[this.data_idx];
         let t = lastTimestepData.get('time')[0];
 
         for (let [name, ldnm] of this.lineDataNameMap) {
             for (let [idx, lineData] of ldnm) {
                 if (lastTimestepData.has(name)) {
                     lineData.appendPoint(t, lastTimestepData.get(name)[idx]);
-                } else if (lastDerivedData.has(name)) {
-                    lineData.appendPoint(t, lastDerivedData.get(name)[idx]);
                 }
             }
         }
 
         this.callback('Traces::endTimestep');
-    }
-
-    setDerivedFn(derivedFn) {
-        // Make sure the `this` object is not captured.
-        this.derivedFn = derivedFn.bind(null);
-
-        // Recompute the derived data.
-        this.timestepData.forEach((tdata, idx) => {
-            let derivedTimestepData = this.derivedData[idx];
-            derivedTimestepData.clear();
-
-            this.derivedFn(tdata, derivedTimestepData);
-        });
-
-        // Refill the lineData for derived data.
-        for (let [name, ldnm] of this.lineDataNameMap) {
-            if (this.timestepData[0].has(name)) {
-                continue;
-            }
-
-            for (let [idx, lineData] of ldnm) {
-                this.fillLineDataByNameIndex(lineData, name, idx);
-            }
-        }
-
-        this.callback('Traces::setDerivedFn');
     }
 
     fillLineData(lineData, data, name, index) {
@@ -227,8 +126,6 @@ class Traces {
     fillLineDataByNameIndex(lineData, name, index) {
         if (this.timestepData[0].has(name)) {
             this.fillLineData(lineData, this.timestepData, name, index);
-        } else if (this.derivedData[0].has(name)) {
-            this.fillLineData(lineData, this.derivedData, name, index);
         }
     }
 
@@ -237,8 +134,6 @@ class Traces {
             return 0;
         } else if (this.timestepData[0].has(name)) {
             return this.timestepData[0].get(name).length;
-        } else if (this.derivedData[0].has(name)) {
-            return this.derivedData[0].get(name).length;
         } else {
             return 0;
         }
@@ -248,7 +143,7 @@ class Traces {
         if (this.timestepData.length == 0) {
             return [];
         } else {
-            return Array.from(this.timestepData[0].keys()).concat(Array.from(this.derivedData[0].keys()))
+            return Array.from(this.timestepData[0].keys())
         }
     }
 
