@@ -6,9 +6,117 @@ function assert(cond, desc) {
     }
 }
 
+class SeriesDataChunk {
+    constructor(name, dim, size) {
+        this.name = name;
+        this.size = size;
+        this.dim = dim;
+        this.times = new BigUint64Array(size);
+        this.timedData = Array(dim).map(_ => new Float32Array(size));
+        this.timeFrom = NaN;
+        this.timeTo = NaN;
+        this.entries = 0;
+    }
+
+    isFull() {
+        return this.entries == this.size;
+    }
+
+    record(time, newData) {
+        if (this.entries == 0) {
+            this.timeFrom = this.timeTo = time;
+        } else if (time < this.timeFrom) {
+            this.timeFrom = time;
+        } else if (time > this.timeTo) {
+            this.timeTo = time;
+        }
+
+        let entries = this.entries;
+        this.times[entries] = time;
+        this.timedData.forEach((series, i) => {
+            series[entries][i] = newData[i];
+        });
+        this.entries++;
+    }
+}
+
+class SeriesData {
+    constructor(name, dim, chunkSize) {
+        this.name = name;
+        this.chunkSize = chunkSize;
+        this.dim = dim;
+
+        this.chunks = [];
+        this.maxTime = 0n;
+
+        this._addChunk();
+    }
+
+    _addChunk() {
+        this.chunks.push(new SeriesDataChunk(this.name, this.dim, this.chunkSize))
+    }
+
+    _maxChunks(maxData) {
+        return Math.ceil(maxData / this.chunkSize) + 1;
+    }
+
+    _maxEntries(maxData) {
+        return this._maxChunks(maxData) * this.chunkSize
+    }
+
+    willEvictData(maxData) {
+        return maxData >= this._maxEntries(maxData);
+    }
+
+    firstTime() {
+        let minTime = this.maxTime;
+        this.chunks.forEach(chunk => {
+            if (chunk.timeFrom < minTime) {
+                minTime = chunk.timeFrom;
+            }
+        });
+        return minTime;
+    }
+
+    lastTime() {
+        let maxTime = 0n;
+        this.chunks.forEach(chunk => {
+            if (chunk.timeTo > maxTime) {
+                maxTime = chunk.timeTo;
+            }
+        });
+        return maxTime;
+    }
+
+    record(time, data, maxData, evictData) {
+        if (maxData < this._maxEntries(maxData)) {
+            if (this.chunks.at(-1).isFull()) {
+                this._addChunk()
+            }
+        } else {
+            if (!evictData) {
+                return false;
+            }
+
+            this.chunks.shift();
+            this._addChunk();
+        }
+
+        if (time > this.maxTime) {
+            this.maxTime = time;
+        }
+
+        this.chunks.at(-1).record(time, data);
+        return true;
+    }
+}
+
+CHUNK_SIZE = 2048;
+
 class Traces {
     constructor(callbackFn) {
         this.callbackFn = [callbackFn];
+        this.currentTime = 0;
         this.clear(true);
     }
 
@@ -17,88 +125,65 @@ class Traces {
     }
 
     clear(supressEvent) {
-        this.timestepData = [];
-        this.lineDataNameMap = new Map();
-        this.data_idx = -1;
-        this.data_size = 0;
-        this.full_buffer = false;
-        this.staticData = new Map();
+        this.seriesData = new Map();
+        this.seriesLineData = new Map();
+        // this.data_idx = -1;
+        // this.data_size = 0;
+        // this.full_buffer = false;
+        // this.staticData = new Map();
 
         if (!supressEvent) {
             this.callback('Traces::clear')
         }
     }
 
-    setStaticData(name, data) {
-        this.staticData.set(name, data);
-        this.callback('Traces::setStaticData', name);
-    }
-
     getFirstTime() {
-        if (this.timestepData.length == 0) {
-            return 0;
-        } else {
-            return this.timestepData[0].get('time')[0];
-        }
+        // TODO: Compute firstTime only for displayed lines.
+        let firstTime = 0n;
+        this.seriesData.values().forEach(series => {
+            let seriesFirstTime = series.firstTime();
+            if (seriesFirstTime < firstTime) {
+                firstTime = seriesFirstTime
+            }
+        });
+        return firstTime;
     }
 
     getLastTime() {
-        if (this.timestepData.length == 0) {
-            return 0;
-        } else {
-            return this.timestepData[this.data_idx].get('time')[0];
-        }
+        // TODO: Compute firstTime only for displayed lines.
+        let lastTime = 0n;
+        this.seriesData.values().forEach(series => {
+            let seriesLastTime = series.lastTime();
+            if (seriesLastTime < lastTime) {
+                lastTime = seriesLastTime
+            }
+        });
+        return lastTime;
     }
 
     willEvictFirstData(maxData) {
-        return this.timestepData.length >= maxData - 1;
+        return this.seriesData.values().some(series => series.willEvictData());
     }
 
-    beginTimestep(time, maxData) {
+    beginTimestep(time) {
         this.time = time;
-
-        let timestepMap;
-        if (this.data_size == 0) {
-            timestepMap = new Map();
-        } else {
-            timestepMap = new Map(this.timestepData[this.data_idx]);
-        }
-
-        timestepMap.set('time', [time]);
-
-        if (this.data_size < maxData) {
-            this.timestepData.push(timestepMap);
-            this.data_size += 1;
-        } else {
-            this.full_buffer = true;
-            this.timestepData[this.data_idx] = timestepMap;
-
-            for (let [name, ldnm] of this.lineDataNameMap) {
-                for (let [idx, lineData] of ldnm) {
-                    lineData.shiftPoint();
-                }
-            }
-        }
-        this.data_idx = (this.data_idx + 1) % maxData;
     }
 
     record(name, value) {
-        this.timestepData[this.data_idx].set(name, value);
+        if (!this.seriesData.has(name)) {
+            this.seriesData.set(name, new SeriesData(name, value.length, CHUNK_SIZE))
+        }
+        this.seriesData.get(name).record(this.time, value);
+
+        for (let i = 0; i < value.length; i++) {
+            let entryName = `${name}$${i}`;
+            if (this.lineData.has(entryName)) {
+                this.lineData.get(entryName).appendPoint(this.time, value[i])
+            }
+        }
     }
 
     endTimestep() {
-        // Add new data to the excisting lineDatas.
-        let lastTimestepData = this.timestepData[this.data_idx];
-        let t = lastTimestepData.get('time')[0];
-
-        for (let [name, ldnm] of this.lineDataNameMap) {
-            for (let [idx, lineData] of ldnm) {
-                if (lastTimestepData.has(name)) {
-                    lineData.appendPoint(t, lastTimestepData.get(name)[idx]);
-                }
-            }
-        }
-
         this.callback('Traces::endTimestep');
     }
 
