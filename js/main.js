@@ -3,7 +3,7 @@ let layout = {
     zoomX: null
 };
 let hasData = false;
-let traces = new Traces(eventCallback);
+let traces = new Traces(wsMaxData, eventCallback);
 traces.callbackFn.push(event3DCallback)
 
 let layoutDom = document.getElementById('layout');

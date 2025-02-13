@@ -63,6 +63,7 @@ class Scene3D {
 
         this.objects = new Map();
         this.currentTimestepData = null;
+        this.time = 0;
     }
 
     initScene() {
@@ -126,24 +127,14 @@ class Scene3D {
     }
 
     setTime(time) {
-        let tsd = traces.timestepData;
-        for (var entry of tsd) {
-            if (entry.get('time') > time) {
-                break;
-            }
-        }
-        this.currentTimestepData = entry;
+        this.time = time;
     }
 
     render() {
-        if (!this.currentTimestepData) {
-            this.setTime(Number.POSITIVE_INFINITY)
-        }
-        let currentTimestep = this.currentTimestepData;
         for (const [name, entry] of this.objects.entries()) {
             let path = `${name}/pos`;
-            if (currentTimestep.has(path)) {
-                let data = currentTimestep.get(path);
+            let data = traces.dataAtTime(path, this.time);
+            if (data) {
                 entry.getObject().position.set(...data.slice(0, 3));
                 entry.getObject().rotation.set(...data.slice(3));
             }
@@ -219,7 +210,7 @@ function addUpdateObject(data) {
 
 function event3DCallback(type, evt, data) {
     switch(type) {
-        case 'Traces::setStaticData':
+        case 'Traces::recordStaticData':
             let payload = traces.staticData.get(data);
             if (payload.type == '3dMesh') {
                 addUpdateObject(payload);

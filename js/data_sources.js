@@ -1,10 +1,10 @@
-let wsMaxData = 1000 * 1000;
+let wsMaxData = 5 * 60 * 1000;
 
 let lastTime = 0;
 
 function parsewebSocketData(data) {
     if ('__static__' in data) {
-        traces.setStaticData(data['name'], data['data']);
+        traces.recordStaticData(data['name'], data['data']);
         return;
     }
 
