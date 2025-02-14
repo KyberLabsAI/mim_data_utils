@@ -65,8 +65,11 @@ function connectViaWebSocket(hideError) {
         }
 
         let data = JSON.parse(event.data);
-        dataRecord.push(event.data);
-        localStorage.setItem('lastData', JSON.stringify(dataRecord));
+
+        if (dataRecord.length < 100) {
+            dataRecord.push(event.data);
+            localStorage.setItem('lastData', JSON.stringify(dataRecord));
+        }
 
         data.forEach(parsewebSocketData);
 

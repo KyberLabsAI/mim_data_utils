@@ -133,7 +133,7 @@ class SeriesData {
     }
 
     lastTime() {
-        let maxTime = 0n;
+        let maxTime = 0;
         this.chunks.forEach(chunk => {
             if (chunk.timeTo > maxTime) {
                 maxTime = chunk.timeTo;
@@ -204,7 +204,7 @@ class Traces {
         let lastTime = 0.;
         this.seriesData.values().forEach(series => {
             let seriesLastTime = series.lastTime();
-            if (seriesLastTime < lastTime) {
+            if (seriesLastTime > lastTime) {
                 lastTime = seriesLastTime
             }
         });
