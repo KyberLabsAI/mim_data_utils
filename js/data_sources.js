@@ -45,11 +45,6 @@ let ws = null;
 function connectViaWebSocket(hideError) {
     ws = new WebSocket("ws://127.0.0.1:5678/");
 
-    JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
-        JSON.parse(entries).forEach(parsewebSocketData);
-    });
-    firstNewData();
-
     let firstData = true;
     ws.onmessage = function (event) {
         if (firstData) {
@@ -90,6 +85,15 @@ function connectViaWebSocket(hideError) {
         }, 1000);
     };
 }
+
+setTimeout(() => {
+    JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
+        JSON.parse(entries).forEach(parsewebSocketData);
+    });
+    firstNewData();
+    
+}, 10)
+
 
 function readDatafile(binaryBuffer) {
     if (ws) {
@@ -141,17 +145,33 @@ function readDatafile(binaryBuffer) {
 
     let fieldNamesWithoutTime = field_names.filter(name => name != 'time');
 
+    traces.clear();
+
+    let timeFilter = (t) => {
+        return true;
+    }
+
+    let time;
     // Read the data blob.
     for (var j = 0; offset < data.length; j++) {
+        time = j * 0.001; // Fallback value assuming 1 kHz.
+        let recordTime = timeFilter(time);
+
         for (let f = 0; f < num_fields; f++) {
             let fieldData = dtData.get(field_names[f]);
             for (let i = 0; i < field_sizes[f]; i++) {
-                fieldData[i] = dv.getFloat32(offset, true);
+                if (recordTime) {
+                    fieldData[i] = dv.getFloat32(offset, true);
+                }
+                
                 offset += 4;
             }
         }
 
-        let time = j * 0.001; // Fallback value assuming 1 kHz.
+        if (!recordTime) {
+            continue;
+        }
+        
         if (dtData.has('time')) {
             time = dtData.get('time')[0];
         }
@@ -164,6 +184,8 @@ function readDatafile(binaryBuffer) {
 
         traces.endTimestep();
     }
+
+    console.log('Data end-time:', time);
 
     layout.zoomX = [traces.getFirstTime(), traces.getLastTime()]
     updatePlotViewport();
