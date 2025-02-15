@@ -111,9 +111,9 @@ class Plot {
             } else {
                 this.lines.forEach(line => {
                     let xlimIndices = line.lineData.findXLimIndices(xlim);
-                    let chuncks = line.lineData.chuncks;
-                    for (let idx = xlimIndices.from.chunckIdx; idx <= xlimIndices.to.chunckIdx; idx++) {
-                        this.lineDrawer.drawLineChunck(chuncks[idx], line.style)
+                    let chunks = line.lineData.chunks;
+                    for (let idx = xlimIndices.from.chunkIdx; idx <= xlimIndices.to.chunkIdx; idx++) {
+                        this.lineDrawer.drawLineChunk(chunks[idx], line.style)
                     }
                 });
             }

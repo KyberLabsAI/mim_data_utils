@@ -50,13 +50,15 @@ class GLDrawer {
 
 // Holds the Float32 array with points, margin and color. Also holds the buffers.
 class LineChunck {
-    constructor() {
-        this.points = 512;
+    constructor(size) {
+        this.points = size;
         this.lineCenter = new Float32Array(2 * this.points);
         this.lineTangential = new Float32Array(2 * this.points);
 
         this.from = 0;
         this.to = 0;
+        this.fromY = 0;
+        this.toY = 0;
         this.lastPoint = null;
     }
 
@@ -75,6 +77,12 @@ class LineChunck {
     }
 
     appendPoint(x1, y1) {
+        if (y1 < this.fromY) {
+            this.fromY = y1;
+        } else if (y1 > this.toY) {
+            this.toY = y1;
+        }
+
         if (this.lastPoint == null) {
             this.lastPoint = {x: x1, y: y1};
             return;
@@ -118,6 +126,10 @@ class LineChunck {
     capacity() {
         return this.points - this.to;
     }
+
+    isFull() {
+        return this.capacity() == 0;
+    }
 }
 
 let binarySearch = (min, max, x, valFn) => {
@@ -134,29 +146,38 @@ let binarySearch = (min, max, x, valFn) => {
 }
 
 class LineData {
-    constructor() {
-        this.chuncks = []
+    constructor(maxData) {
+        this.maxData = maxData;
+        this.chunkSize = 512;
+        this.clear();
+    }
+
+    _maxChunks() {
+        // We support at least maxData entries. Adding an extra chunk. This way
+        // when the chunks are full and the first one gets emptied, there is still
+        // room for at least maxData entries.
+        return Math.ceil(this.maxData / this.chunkSize) + 1;
     }
 
     clear() {
-        this.chuncks = []
+        this.chunks = [new LineChunck(this.chunkSize)]
     }
 
     findXIdx(x) {
-        let chuncks = this.chuncks;
+        let chunks = this.chunks;
 
-        let cIdx = binarySearch(0, this.chuncks.length - 1, x, (idx) => {
-            let chunck = chuncks[idx];
-            return chunck.lineCenter[2 * (chunck.to - 1)];
+        let cIdx = binarySearch(0, this.chunks.length - 1, x, (idx) => {
+            let chunk = chunks[idx];
+            return chunk.lineCenter[2 * (chunk.to - 1)];
         });
 
-        let chunck = chuncks[cIdx];
-        let pIdx = binarySearch(chunck.from, chunck.to - 1, x, (idx) => {
-            return chunck.lineCenter[2 * idx];
+        let chunk = chunks[cIdx];
+        let pIdx = binarySearch(chunk.from, chunk.to - 1, x, (idx) => {
+            return chunk.lineCenter[2 * idx];
         });
 
         return {
-            chunckIdx: cIdx,
+            chunkIdx: cIdx,
             pointIdx: pIdx
         };
     }
@@ -168,63 +189,62 @@ class LineData {
         }
     }
 
-    // Returns the yi of point i with xi = max x st xi < x.
-    findYLim(xlimIndices, ylim) {
-        let x0c = xlimIndices.from.chunckIdx;
-        let x0p = xlimIndices.from.pointIdx;
-        let x1c = xlimIndices.to.chunckIdx;
-        let x1p = xlimIndices.to.pointIdx;
-
-        for (let xIdx = x0c; xIdx <= x1c; xIdx++) {
-            let chunck = this.chuncks[xIdx];
-
-            let pFrom = 0;
-            let pTo = 0;
-            if (xIdx == x0c) {
-                pFrom = x0p;
-            } else {
-                pFrom = chunck.from;
-            }
-
-            if (xIdx == x1c) {
-                pTo = x1p;
-            } else {
-                pTo = chunck.to - 1;
-            }
-
-            for (let pIdx = pFrom; pIdx <= pTo; pIdx ++) {
-                let y = chunck.getLineCenterY(pIdx);
-                if (ylim === undefined) {
-                    ylim = [y, y];
-                } else if (y < ylim[0]) {
-                    ylim[0] = y;
-                } else if (y > ylim[1]) {
-                    ylim[1] = y;
-                }
+    _findYLimPartialChunk(xIdx, pFrom, pTo, ylim) {
+        let chunk = this.chunks[xIdx];
+        for (let pIdx = pFrom; pIdx <= pTo; pIdx ++) {
+            let y = chunk.getLineCenterY(pIdx);
+            if (ylim === undefined) {
+                ylim = [y, y];
+            } else if (y < ylim[0]) {
+                ylim[0] = y;
+            } else if (y > ylim[1]) {
+                ylim[1] = y;
             }
         }
+        return ylim;
+    }
+
+    // Returns the yi of point i with xi = max x st xi < x.
+    findYLim(xlimIndices, ylim) {
+        let x0c = xlimIndices.from.chunkIdx;
+        let x0p = xlimIndices.from.pointIdx;
+        let x1c = xlimIndices.to.chunkIdx;
+        let x1p = xlimIndices.to.pointIdx;
+
+        // Look up the ylim in the middle from chunk limits.
+        for (let cidx = x0c + 1; cidx < x1c; cidx++) {
+            let chunk = this.chunks[cidx];
+            if (ylim === undefined) {
+                ylim = [chunk.fromY, chunk.toY];
+            } else if (chunk.fromY < ylim[0]) {
+                ylim[0] = chunk.fromY;
+            } else if (chunk.toY > ylim[1]) {
+                ylim[1] = chunk.toY;
+            }
+        }
+
+        ylim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].to - 1, ylim);
+        ylim = this._findYLimPartialChunk(x1c, 0, x1p, ylim);
 
         return ylim;
     }
 
-    appendPoint(x, y) {
-        let chunck = this.chuncks.at(-1)
-        if (!chunck || chunck.capacity() == 0) {
-            let lastPoint = (chunck && chunck.lastPoint) || null;
-            chunck = new LineChunck();
-            chunck.lastPoint = lastPoint;
-            this.chuncks.push(chunck);
-        }
-        chunck.appendPoint(x, y);
+    _addChunk() {
+        let lastChunck = this.chunks.at(-1);
+        let chunk = new LineChunck(this.chunkSize);
+        chunk.lastPoint = lastChunck.lastPoint;
+        this.chunks.push(chunk);
     }
 
-    shiftPoint() {
-        let chunck = this.chuncks[0];
-        chunck.shiftPoint();
-
-        if (chunck.isEmpty() && chunck.capacity() == 0) {
-            this.chuncks.shift();
+    appendPoint(x, y) {
+        if (this.chunks.at(-1).isFull()) {
+            if (this.chunks.length >= this._maxChunks()) {
+                this.chunks.shift();
+            }
+            this._addChunk();
         }
+
+        this.chunks.at(-1).appendPoint(x, y);
     }
 }
 
@@ -270,14 +290,14 @@ class GLLineDrawer {
         gl.clear(gl.COLOR_BUFFER_BIT);
     }
 
-    drawLineChunck(lineChunck, style) {
+    drawLineChunk(lineChunk, style) {
         let gl = this.ctx.gl;
         let canvas = this.ctx.canvas;
         let program = this.program;
         gl.useProgram(program);
 
-        this.bindData('lineCenter', this.bufferLineCenterData, lineChunck.lineCenter, 2);
-        this.bindData('lineTangential', this.bufferLineTangential, lineChunck.lineTangential, 2);
+        this.bindData('lineCenter', this.bufferLineCenterData, lineChunk.lineCenter, 2);
+        this.bindData('lineTangential', this.bufferLineTangential, lineChunk.lineTangential, 2);
 
         gl.uniform2fv(this.offsetUniformLocation, [this.offsetX, this.offsetY])
         gl.uniform4fv(this.colorUniformLocation, [style.r, style.g, style.b, 1.])
@@ -289,7 +309,7 @@ class GLLineDrawer {
 
         gl.uniform1f(this.zUniformLocation, style.z);
 
-        gl.drawArrays(gl.TRIANGLE_STRIP, lineChunck.from, lineChunck.to - lineChunck.from);
+        gl.drawArrays(gl.TRIANGLE_STRIP, lineChunk.from, lineChunk.to - lineChunk.from);
     }
 
     setViewport(xl, yl, xh, yh) {

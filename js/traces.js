@@ -278,7 +278,7 @@ class Traces {
         }
 
 
-        let lineData = new LineData();
+        let lineData = new LineData(this.maxData);
         this.fillLineData(lineData, name, index);
         this.lineData.set(key, lineData);
         return lineData;
