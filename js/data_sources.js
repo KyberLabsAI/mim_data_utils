@@ -1,4 +1,5 @@
-let wsMaxData = 5 * 60 * 1000;
+// let wsMaxData = 5 * 60 * 1000;
+let wsMaxData = 1000 * 1000;
 
 let lastTime = 0;
 
@@ -91,7 +92,7 @@ setTimeout(() => {
         JSON.parse(entries).forEach(parsewebSocketData);
     });
     firstNewData();
-    
+
 }, 10)
 
 
@@ -163,7 +164,7 @@ function readDatafile(binaryBuffer) {
                 if (recordTime) {
                     fieldData[i] = dv.getFloat32(offset, true);
                 }
-                
+
                 offset += 4;
             }
         }
@@ -171,7 +172,7 @@ function readDatafile(binaryBuffer) {
         if (!recordTime) {
             continue;
         }
-        
+
         if (dtData.has('time')) {
             time = dtData.get('time')[0];
         }

@@ -358,5 +358,14 @@ addOptions.addEventListener('change', evt => {
 })
 
 updateSignals();
-connectViaWebSocket();
+// connectViaWebSocket();
 animate();
+
+traces.clear();
+
+for (let ti = 0; ti < 1000 * 1000; ti++) {
+    traces.beginTimestep(0.001 * ti);
+    traces.record('sin', [Math.sin(0.001 * ti)])
+    traces.endTimestep();
+}
+

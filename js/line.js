@@ -48,10 +48,30 @@ class GLDrawer {
     }
 }
 
+class GPUData {
+    constructor(parent, data) {
+        this.parent = parent;
+        this.buffer = null;
+        this.data = data;
+    }
+
+    bind(gl) {
+        if (!this.buffer) {
+            this.buffer = gl.createBuffer();
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+
+        if (!this.parent.wasBuffered) {
+            gl.bufferData(gl.ARRAY_BUFFER, this.data, gl.STATIC_DRAW);
+        }
+    }
+}
+
 // Holds the Float32 array with points, margin and color. Also holds the buffers.
 class LineChunck {
     constructor(size) {
-        this.points = size;
+        this.points = 16 * size;
         this.lineCenter = new Float32Array(2 * this.points);
         this.lineTangential = new Float32Array(2 * this.points);
 
@@ -60,7 +80,13 @@ class LineChunck {
         this.fromY = 0;
         this.toY = 0;
         this.lastPoint = null;
+        this.wasBuffered = false;
+
+        this.gpuLineCenter = new GPUData(this, this.lineCenter);
+        this.gpuLineTangential = new GPUData(this, this.lineTangential);
     }
+
+
 
     getLineCenterY(i) {
         return this.lineCenter[2 * i + 1];
@@ -110,6 +136,8 @@ class LineChunck {
         this.addVertex(x0, y0, -tx, -ty);
         this.addVertex(x1, y1, tx, ty);
         this.addVertex(x1, y1, -tx, -ty);
+
+        this.wasBuffered = false;
     }
 
     shiftPoint() {
@@ -270,19 +298,15 @@ class GLLineDrawer {
         this.transformCenterUniformLocation = gl.getUniformLocation(program, "u_transformCenter");
         this.colorUniformLocation = gl.getUniformLocation(program, "u_color");
         this.zUniformLocation = gl.getUniformLocation(program, "u_z");
-
-        this.bufferLineCenterData = gl.createBuffer();
-        this.bufferLineTangential = gl.createBuffer();
     }
 
-    bindData(attribute, buffer, dataArray, size) {
+    bindData(attributeName, gpuData, size) {
         const gl = this.ctx.gl;
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, dataArray, gl.STATIC_DRAW);
+        gpuData.bind(gl);
 
-        const attributeLineCenter = gl.getAttribLocation(this.program, attribute);
-        gl.enableVertexAttribArray(attributeLineCenter);
-        gl.vertexAttribPointer(attributeLineCenter, size, gl.FLOAT, false, 0, 0);
+        const attribute = gl.getAttribLocation(this.program, attributeName);
+        gl.enableVertexAttribArray(attribute);
+        gl.vertexAttribPointer(attribute, size, gl.FLOAT, false, 0, 0);
     }
 
     clear() {
@@ -296,8 +320,10 @@ class GLLineDrawer {
         let program = this.program;
         gl.useProgram(program);
 
-        this.bindData('lineCenter', this.bufferLineCenterData, lineChunk.lineCenter, 2);
-        this.bindData('lineTangential', this.bufferLineTangential, lineChunk.lineTangential, 2);
+        this.bindData('lineCenter', lineChunk.gpuLineCenter, 2, );
+        this.bindData('lineTangential', lineChunk.gpuLineTangential, 2);
+
+        lineChunk.wasBuffered = true;
 
         gl.uniform2fv(this.offsetUniformLocation, [this.offsetX, this.offsetY])
         gl.uniform4fv(this.colorUniformLocation, [style.r, style.g, style.b, 1.])
