@@ -48,23 +48,35 @@ class GLDrawer {
     }
 }
 
+class GPUBufferHandler {
+    constructor(buffer) {
+        this.buffer = buffer;
+        this.lastDataVersion = -1;
+    }
+
+    bindSync(gl, dataVersion, data) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+
+        if (this.lastDataVersion < dataVersion) {
+            gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        }
+        this.lastDataVersion = dataVersion;
+    }
+}
+
 class GPUData {
     constructor(parent, data) {
         this.parent = parent;
-        this.buffer = null;
+        this.buffer = new Map();
         this.data = data;
     }
 
     bind(gl) {
-        if (!this.buffer) {
-            this.buffer = gl.createBuffer();
+        if (!this.buffer.has(gl)) {
+            this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer()));
         }
 
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-
-        if (!this.parent.wasBuffered) {
-            gl.bufferData(gl.ARRAY_BUFFER, this.data, gl.STATIC_DRAW);
-        }
+        this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.data);
     }
 }
 
@@ -80,13 +92,11 @@ class LineChunck {
         this.fromY = 0;
         this.toY = 0;
         this.lastPoint = null;
-        this.wasBuffered = false;
+        this.dataVersion = 0;
 
         this.gpuLineCenter = new GPUData(this, this.lineCenter);
         this.gpuLineTangential = new GPUData(this, this.lineTangential);
     }
-
-
 
     getLineCenterY(i) {
         return this.lineCenter[2 * i + 1];
@@ -137,7 +147,7 @@ class LineChunck {
         this.addVertex(x1, y1, tx, ty);
         this.addVertex(x1, y1, -tx, -ty);
 
-        this.wasBuffered = false;
+        this.dataVersion++;
     }
 
     shiftPoint() {

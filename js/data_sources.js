@@ -87,14 +87,6 @@ function connectViaWebSocket(hideError) {
     };
 }
 
-setTimeout(() => {
-    JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
-        JSON.parse(entries).forEach(parsewebSocketData);
-    });
-    firstNewData();
-
-}, 10)
-
 
 function readDatafile(binaryBuffer) {
     if (ws) {

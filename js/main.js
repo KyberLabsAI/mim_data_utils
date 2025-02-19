@@ -58,6 +58,11 @@ function getXLim() {
     return xlim;
 }
 
+document.getElementById('xlimDom').addEventListener('change', (evt) => {
+    layout.zoomX = null;
+    updatePlotViewport();
+})
+
 function updatePlotViewport() {
     let xlim = getXLim();
 
@@ -357,9 +362,6 @@ addOptions.addEventListener('change', evt => {
     updateLayout();
 })
 
-updateSignals();
-animate();
-
 if (window.location.hash == '#dummy') {
     traces.clear(false, Number.POSITIVE_INFINITY);
     wsMaxData = 1000 * 1000;
@@ -371,4 +373,16 @@ if (window.location.hash == '#dummy') {
     }
 } else {
     connectViaWebSocket();
+
+    setTimeout(() => {
+        JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
+            JSON.parse(entries).forEach(parsewebSocketData);
+        });
+        firstNewData();
+
+    }, 10)
 }
+
+updateSignals();
+updateLayout();
+animate();
