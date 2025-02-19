@@ -1,5 +1,5 @@
-// let wsMaxData = 5 * 60 * 1000;
-let wsMaxData = 1000 * 1000;
+let wsMaxData = 5 * 60 * 1000;
+//let wsMaxData = 1000 * 1000;
 
 let lastTime = 0;
 
@@ -146,7 +146,7 @@ function readDatafile(binaryBuffer) {
 
     let fieldNamesWithoutTime = field_names.filter(name => name != 'time');
 
-    traces.clear();
+    traces.clear(false, Number.POSITIVE_INFINITY);
 
     let timeFilter = (t) => {
         return true;

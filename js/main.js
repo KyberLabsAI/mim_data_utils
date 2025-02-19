@@ -358,14 +358,17 @@ addOptions.addEventListener('change', evt => {
 })
 
 updateSignals();
-// connectViaWebSocket();
 animate();
 
-traces.clear();
+if (window.location.hash == '#dummy') {
+    traces.clear(false, Number.POSITIVE_INFINITY);
+    wsMaxData = 1000 * 1000;
 
-for (let ti = 0; ti < 1000 * 1000; ti++) {
-    traces.beginTimestep(0.001 * ti);
-    traces.record('sin', [Math.sin(0.001 * ti)])
-    traces.endTimestep();
+    for (let ti = 0; ti < 1000 * 1000; ti++) {
+        traces.beginTimestep(0.001 * ti);
+        traces.record('sin', [Math.sin(0.001 * ti)])
+        traces.endTimestep();
+    }
+} else {
+    connectViaWebSocket();
 }
-
