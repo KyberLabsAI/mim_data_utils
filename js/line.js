@@ -83,7 +83,7 @@ class GPUData {
 // Holds the Float32 array with points, margin and color. Also holds the buffers.
 class LineChunck {
     constructor(size) {
-        this.points = 16 * size;
+        this.points = 4 * size; // There are 4 entires per stored point.
         this.lineCenter = new Float32Array(2 * this.points);
         this.lineTangential = new Float32Array(2 * this.points);
 

@@ -108,10 +108,10 @@ class SeriesData {
     }
 
     _maxChunks() {
-        // We support at least maxData entries. Adding an extra chunck. This way
+        // We support at least maxSize entries. Adding an extra chunck. This way
         // when the chuncks are full and the first one gets emptied, there is still
-        // room for at least maxData entries.
-        return Math.ceil(this.maxData / this.chunkSize) + 1;
+        // room for at least maxSize entries.
+        return Math.ceil(this.maxSize / this.chunkSize) + 1;
     }
 
     _maxEntries() {
@@ -143,6 +143,10 @@ class SeriesData {
     }
 
     record(time, data) {
+        if (time > this.maxTime) {
+            this.maxTime = time;
+        }
+
         if (this.chunks.at(-1).isFull()) {
             if (this.chunks.length >= this._maxChunks()) {
                 this.chunks.shift();
@@ -158,8 +162,8 @@ class SeriesData {
 CHUNK_SIZE = 2048;
 
 class Traces {
-    constructor(maxData, callbackFn) {
-        this.maxData = maxData;
+    constructor(maxSize, callbackFn) {
+        this.maxSize = maxSize;
         this.callbackFn = [callbackFn];
         this.currentTime = 0;
         this.clear(true);
@@ -193,7 +197,7 @@ class Traces {
 
     getFirstTime() {
         // TODO: Compute firstTime only for displayed lines.
-        let firstTime = 0.;
+        let firstTime = this.getLastTime();
         this.seriesData.values().forEach(series => {
             let seriesFirstTime = series.firstTime();
             if (seriesFirstTime < firstTime) {
@@ -215,7 +219,7 @@ class Traces {
         return lastTime;
     }
 
-    willEvictFirstData(maxData) {
+    willEvictFirstData(maxSize) {
         return this.seriesData.values().some(series => series.willEvictData());
     }
 
@@ -282,7 +286,7 @@ class Traces {
         }
 
 
-        let lineData = new LineData(this.maxData);
+        let lineData = new LineData(this.maxSize);
         this.fillLineData(lineData, name, index);
         this.lineData.set(key, lineData);
         return lineData;
