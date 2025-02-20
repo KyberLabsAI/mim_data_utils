@@ -186,7 +186,7 @@ let binarySearch = (min, max, x, valFn) => {
 class LineData {
     constructor(maxData) {
         this.maxData = maxData;
-        this.chunkSize = 512;
+        this.chunkSize = 32 * 512;
         this.clear();
     }
 

@@ -173,7 +173,7 @@ class Traces {
         this.callbackFn.forEach(fn => fn(type, this, payload));
     }
 
-    clear(supressEvent, newMaxData) {
+    clear(supressEvent, newMaxSize) {
         this.seriesData = new Map();
         this.lineData = new Map();
         this.staticData = new Map();
@@ -182,8 +182,8 @@ class Traces {
             this.callback('Traces::clear')
         }
 
-        if (newMaxData) {
-            this.maxData = newMaxData;
+        if (newMaxSize) {
+            this.maxSize = newMaxSize;
         }
     }
 
