@@ -286,10 +286,10 @@ let shouldResize = true; // Force resize on first draw.
 let draw = () => {
     requestAnimationFrame(draw);
 
-    let updateAxesOnly = drawCounter++ % 5 > 0;
-    if (updateAxesOnly) {
-        return;
-    }
+    // let updateAxesOnly = drawCounter++ % 5 > 0;
+    // if (updateAxesOnly) {
+    //     return;
+    // }
 
     if (shouldResize) {
         shouldResize = false;
@@ -299,7 +299,7 @@ let draw = () => {
 
     let xlim = updatePlotViewport();
 
-    plots.forEach(plot => plot.draw(xlim, layoutVersion, updateAxesOnly));
+    plots.forEach(plot => plot.draw(xlim, layoutVersion, false));
 }
 
 window.addEventListener('resize', (evt) => {
