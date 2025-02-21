@@ -20,12 +20,12 @@ class Plane3D {
 }
 
 class Mesh3D {
-    constructor(name, vertices, indices, color, scale) {
+    constructor(name, vertices, indices, material, scale) {
         this.name = name;
 
         this.vertices = vertices;
         this.indices = indices;
-        this.color = color;
+        this.material = material;
         this.scale = scale;
 
         this.mesh = null;
@@ -39,9 +39,7 @@ class Mesh3D {
         geometry.setIndex(this.indices);
         geometry.computeVertexNormals(); // Important for lighting!
 
-        const material = new THREE.MeshPhongMaterial({
-            color: this.color
-        });
+        const material = new THREE.MeshPhongMaterial(this.material);
         const mesh = this.mesh = new THREE.Mesh(geometry, material);
         mesh.scale.set(...this.scale);
         mesh.castShadow = true;
@@ -91,7 +89,7 @@ class Scene3D {
         const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
         scene.add(ambientLight);
 
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.); // White directional light
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5); // White directional light
         directionalLight.position.set(.03, .03, .03).normalize(); // From top right
         directionalLight.castShadow = true; // Cast shadows
         scene.add(directionalLight);
@@ -136,7 +134,12 @@ class Scene3D {
             let data = traces.dataAtTime(path, this.time);
             if (data) {
                 entry.getObject().position.set(...data.slice(0, 3));
-                entry.getObject().rotation.set(...data.slice(3));
+
+                let mesh = entry.getObject()
+                mesh.rotation.set(0, 0, 0);
+                mesh.rotateX(data[3]);
+                mesh.rotateY(data[4]);
+                mesh.rotateZ(data[5]);
             }
         }
 
@@ -204,8 +207,7 @@ function addUpdateObject(data) {
         data.color = parseInt(data.color);
     }
 
-    // let mesh = new Mesh3D(data.name, data.vertices, data.indices, data.color, data.scale)
-    scene.addObject(new Mesh3D('3d/sphere', data.vertices, data.indices, data.color, data.scale));
+    scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
 }
 
 function event3DCallback(type, evt, data) {

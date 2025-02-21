@@ -4,36 +4,54 @@ let wsMaxData = 5 * 60 * 1000;
 let lastTime = 0;
 
 function parsewebSocketData(data) {
-    if ('__static__' in data) {
-        traces.recordStaticData(data['name'], data['data']);
-        return;
-    }
-
-    let t = parseFloat(data['time']);
     let relayout = false;
+    let time = data['time'];
 
-    if (Math.abs(t - lastTime) > 5) {
-        traces.clear();
-        relayout = true
+    // HACK: Abusing the `time` entry for other things...
+    switch (time) {
+        case 'static':
+            for (let [key, value] of Object.entries(data)) {
+                if (key === 'time') {
+                    continue;
+                }
+                traces.recordStaticData(key, value);
+            }
+            relayout = true;
+            break
+
+        case 'clear':
+            wsMaxData = data['maxData'];
+            traces.clear(wsMaxData);
+            relayout = true;
+            break;
+
+        default:
+            let t = parseFloat(time);
+
+            if (Math.abs(t - lastTime) > 5) {
+                traces.clear();
+                relayout = true
+            }
+
+            lastTime = t;
+
+            traces.beginTimestep(t, wsMaxData);
+
+            for (let [key, value] of Object.entries(data)) {
+                if (key === 'time') {
+                    continue;
+                }
+
+                if (!Array.isArray(value)) {
+                    value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
+                }
+
+                traces.record(key, value)
+            }
+
+            traces.endTimestep();
+            break;
     }
-
-    lastTime = t;
-
-    traces.beginTimestep(t, wsMaxData);
-
-    for (let [key, value] of Object.entries(data)) {
-        if (key === 'time') {
-            continue;
-        }
-
-        if (!Array.isArray(value)) {
-            value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
-        }
-
-        traces.record(key, value)
-    }
-
-    traces.endTimestep();
 
     if (relayout) {
         updateLayout();
