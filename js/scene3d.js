@@ -89,7 +89,7 @@ class Scene3D {
         const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
         scene.add(ambientLight);
 
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5); // White directional light
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.); // White directional light
         directionalLight.position.set(.03, .03, .03).normalize(); // From top right
         directionalLight.castShadow = true; // Cast shadows
         scene.add(directionalLight);
@@ -119,6 +119,43 @@ class Scene3D {
         this.resize();
     }
 
+    _removeObjectAndChildren(object) {
+        let scene = this.scene;
+
+        if (!object) return; // Safety check: Make sure the object exists
+
+        // Recursively remove children first
+        while (object.children.length > 0) {
+          const child = object.children[0]; // Get the first child
+          removeObjectAndChildren(child, scene); // Recursively call this function for the child
+        }
+
+        // Now that all children are removed, remove the object itself
+        scene.remove(object);
+
+        // Dispose of geometry
+        if (object.geometry) {
+          object.geometry.dispose();
+        }
+
+        // Dispose of materials (handle both single materials and arrays of materials)
+        if (object.material) {
+          if (Array.isArray(object.material)) {
+            object.material.forEach(material => {
+              if (material) material.dispose(); // Check if material exists before disposing
+            });
+          } else {
+            if (object.material) object.material.dispose(); // Check if material exists before disposing
+          }
+        }
+    }
+
+    clear() {
+        for (const [name, entry] of this.objects.entries()) {
+            this._removeObjectAndChildren(entry.getObject());
+        }
+    }
+
     addObject(obj) {
         this.objects.set(obj.name, obj);
         this.scene.add(obj.getObject());
@@ -133,13 +170,9 @@ class Scene3D {
             let path = `${name}/pos`;
             let data = traces.dataAtTime(path, this.time);
             if (data) {
-                entry.getObject().position.set(...data.slice(0, 3));
-
-                let mesh = entry.getObject()
-                mesh.rotation.set(0, 0, 0);
-                mesh.rotateX(data[3]);
-                mesh.rotateY(data[4]);
-                mesh.rotateZ(data[5]);
+                let obj = entry.getObject();
+                obj.position.set(...data.slice(0, 3));
+                obj.quaternion.set(...data.slice(3))
             }
         }
 

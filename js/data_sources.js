@@ -21,6 +21,7 @@ function parsewebSocketData(data) {
 
         case 'clear':
             wsMaxData = data['maxData'];
+            scene.clear();
             traces.clear(wsMaxData);
             relayout = true;
             break;
