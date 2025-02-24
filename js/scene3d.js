@@ -61,7 +61,7 @@ class Scene3D {
 
         this.objects = new Map();
         this.currentTimestepData = null;
-        this.time = 0;
+        this.time = null;
     }
 
     initScene() {
@@ -166,9 +166,16 @@ class Scene3D {
     }
 
     render() {
+        let time;
+        if (this.time !== null) {
+            time = this.time;
+        } else {
+            time = traces.getLastTime();
+        }
+
         for (const [name, entry] of this.objects.entries()) {
             let path = `${name}/pos`;
-            let data = traces.dataAtTime(path, this.time);
+            let data = traces.dataAtTime(path, time);
             if (data) {
                 let obj = entry.getObject();
                 obj.position.set(...data.slice(0, 3));

@@ -89,13 +89,12 @@ class SeriesData {
     dataAtTime(time) {
         // TODO: Assuming the chuncks are chronologically ordered here. Doesn't need to
         // be the case. Fix later to support out-of-order recording of data.
-        for (let chunck of this.chunks) {
-            let data = chunck.dataAtTime(time);
+        for (let i = this.chunks.length - 1; i >= 0; i--) {
+            let data = this.chunks[i].dataAtTime(time);
             if (data) {
                 return data;
             }
         }
-        return undefined;
     }
 
     forEachLinearTimeIndex(index, callback) {

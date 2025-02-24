@@ -252,6 +252,7 @@ function eventCallback(type, evt) {
                 layout.zoomX = zoomStack.pop()
             } else {
                 layout.zoomX = null;
+                scene.setTime(null);
                 freeze(false);
             }
             updatePlotViewport();
@@ -374,13 +375,13 @@ if (window.location.hash == '#dummy') {
 } else {
     connectViaWebSocket();
 
-    setTimeout(() => {
-        JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
-            JSON.parse(entries).forEach(parsewebSocketData);
-        });
-        firstNewData();
+    // setTimeout(() => {
+    //     JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
+    //         JSON.parse(entries).forEach(parsewebSocketData);
+    //     });
+    //     firstNewData();
 
-    }, 10)
+    // }, 10)
 }
 
 updateSignals();
