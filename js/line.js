@@ -261,8 +261,12 @@ class LineData {
             }
         }
 
-        ylim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].to - 1, ylim);
-        ylim = this._findYLimPartialChunk(x1c, 0, x1p, ylim);
+        if (x0c == x1c) {
+            ylim = this._findYLimPartialChunk(x0c, x0p, x1p, ylim);
+        } else {
+            ylim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].to - 1, ylim);
+            ylim = this._findYLimPartialChunk(x1c, 0, x1p, ylim);
+        }
 
         return ylim;
     }
