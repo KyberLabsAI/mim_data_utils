@@ -36,6 +36,12 @@ function parsewebSocketData(data) {
 
             lastTime = t;
 
+            // Ignore new data in case the view is frozen and there is no space
+            // in the traces object left.
+            if (isFrozen && traces.willEvictFirstData(wsMaxData)) {
+                break;
+            }
+
             traces.beginTimestep(t, wsMaxData);
 
             for (let [key, value] of Object.entries(data)) {
@@ -73,18 +79,12 @@ function connectViaWebSocket(hideError) {
             dataRecord = []
         }
 
-        // Ignore new data in case the view is frozen and there is no space
-        // in the traces object left.
-        if (isFrozen && traces.willEvictFirstData(wsMaxData)) {
-            return;
-        }
-
         let data = JSON.parse(event.data);
 
-        if (dataRecord.length < 100) {
-            dataRecord.push(event.data);
-            localStorage.setItem('lastData', JSON.stringify(dataRecord));
-        }
+        // if (dataRecord.length < 100) {
+        //     dataRecord.push(event.data);
+        //     localStorage.setItem('lastData', JSON.stringify(dataRecord));
+        // }
 
         data.forEach(parsewebSocketData);
 
