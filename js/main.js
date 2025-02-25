@@ -259,6 +259,11 @@ function eventCallback(type, evt) {
             evt.preventDefault();
             break;
 
+        case "Traces::newSeriesData":
+            updateSignals();
+            updateLayout();
+            break;
+
         case "Traces::endTimestep":
         case "Traces::setDerivedFn":
         case "Traces::clear":
@@ -266,6 +271,15 @@ function eventCallback(type, evt) {
             break;
 
     }
+}
+
+var showScene = false;
+
+function toggleScene() {
+    showScene = !showScene;
+    document.body.classList.toggle('showScene', showScene);
+    scene.resize();
+    shouldResize = true;
 }
 
 var isFrozen = false;
@@ -301,6 +315,10 @@ let draw = () => {
     let xlim = updatePlotViewport();
 
     plots.forEach(plot => plot.draw(xlim, layoutVersion, false));
+
+    if (showScene) {
+        scene.render();
+    }
 }
 
 window.addEventListener('resize', (evt) => {
@@ -386,4 +404,3 @@ if (window.location.hash == '#dummy') {
 
 updateSignals();
 updateLayout();
-animate();

@@ -236,8 +236,10 @@ class Traces {
     }
 
     record(name, value) {
+        let newSeries = false;
         if (!this.seriesData.has(name)) {
             this.seriesData.set(name, new SeriesData(name, value.length, CHUNK_SIZE, this.maxSize))
+            newSeries = true;
         }
         this.seriesData.get(name).record(this.time, value);
 
@@ -246,6 +248,10 @@ class Traces {
             if (this.lineData.has(entryName)) {
                 this.lineData.get(entryName).appendPoint(this.time, value[i])
             }
+        }
+
+        if (newSeries) {
+            this.callback('Traces::newSeriesData', name);
         }
     }
 

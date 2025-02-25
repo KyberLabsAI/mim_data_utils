@@ -266,10 +266,3 @@ window.addEventListener('resize', () => {
     scene.resize()
 });
 
-
-// Animation loop
-function animate() {
-    requestAnimationFrame(animate);
-
-    scene.render();
-}
