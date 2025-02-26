@@ -275,8 +275,16 @@ function eventCallback(type, evt) {
 
 var showScene = false;
 
-function toggleScene() {
-    showScene = !showScene;
+function toggleScene(state) {
+    if (state === undefined) {
+        showScene = !showScene;
+    } else {
+        if (showScene == state) {
+            return;
+        }
+        showScene = state;
+    }
+
     document.body.classList.toggle('showScene', showScene);
     scene.resize();
     shouldResize = true;

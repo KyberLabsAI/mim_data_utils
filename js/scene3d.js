@@ -248,6 +248,8 @@ function addUpdateObject(data) {
     }
 
     scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
+
+    toggleScene(true);
 }
 
 function event3DCallback(type, evt, data) {

@@ -99,9 +99,9 @@ function connectViaWebSocket(hideError) {
         }
 
         setTimeout(() => {
-            if (firstData) {
-                connectViaWebSocket(true);
-            }
+            // if (firstData) {
+            connectViaWebSocket(true);
+            // }
         }, 1000);
     };
 }
