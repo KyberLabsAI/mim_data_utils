@@ -23,7 +23,13 @@ function parsewebSocketData(data) {
             wsMaxData = data['maxData'];
             scene.clear();
             traces.clear(wsMaxData);
+            toggleScene(false);
             relayout = true;
+            break;
+
+        case 'layout':
+            layoutDom.value = data['layout'];
+            updateLayout();
             break;
 
         default:
@@ -97,15 +103,14 @@ function connectViaWebSocket(hideError) {
         if (!hideError) {
             alert('Error with streaming. Is the data streamed?');
         }
-
-        setTimeout(() => {
-            // if (firstData) {
-            connectViaWebSocket(true);
-            // }
-        }, 1000);
     };
 }
 
+setInterval(() => {
+    if (!ws || ws.readyState >= 2) {
+        connectViaWebSocket(true);
+    }
+}, 500);
 
 function readDatafile(binaryBuffer) {
     if (ws) {

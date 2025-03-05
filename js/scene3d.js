@@ -89,7 +89,7 @@ class Scene3D {
         const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
         scene.add(ambientLight);
 
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.); // White directional light
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 3.); // White directional light
         directionalLight.position.set(.03, .03, .03).normalize(); // From top right
         directionalLight.castShadow = true; // Cast shadows
         scene.add(directionalLight);
@@ -239,12 +239,37 @@ let scene = new Scene3D(document.getElementById('viewer'));
 let plane = new Plane3D('plane')
 scene.addObject(plane)
 
+function colorArrayToNumber(arr) {
+    let res = 0;
+    arr.forEach((val, i) => {
+        res += Math.floor(val * 255) << (8 * (2 - i));
+    });
+    return res;
+}
+
 function addUpdateObject(data) {
     if (!(data.vertices instanceof Float32Array)) {
         data.vertices = new Float32Array(data.vertices)
     }
-    if (typeof data.color == 'string') {
-        data.color = parseInt(data.color);
+
+    if (!data.material) {
+        data.material = {};
+    }
+
+    if (data.material.color) {
+        let color = data.material.color;
+        if (typeof color == 'string') {
+            color = parseInt(color, 16);
+        } else if (color.length == 3) {
+            color = colorArrayToNumber(color);
+        } else if (color.length == 4) {
+            data.material.transparent = true;
+            data.material.opacity = color[3];
+            color = colorArrayToNumber(color.slice(0, 3));
+        }
+        data.material.color = color;
+    } else {
+        data.material.color = parseInt('dddddd', 16); // Gray.
     }
 
     scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
