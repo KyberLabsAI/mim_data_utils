@@ -274,7 +274,11 @@ function addUpdateObject(data) {
 
     scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
 
-    toggleScene(true);
+
+    // HACK: If a new object is added and scene is not visible, make it visible.
+    if (!isSceneDisplayed()) {
+        toggleScene(1);
+    }
 }
 
 function event3DCallback(type, evt, data) {

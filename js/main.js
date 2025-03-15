@@ -11,7 +11,7 @@ let domPlots = document.getElementById('plots');
 let addOptions = document.getElementById('addOptions');
 let layoutVersion = 0;
 
-layoutDom.value = localStorage.getItem('layout') || "plots=sin[0],msin[0]/msin[0]; xlim=[-3,-0]";
+layoutDom.value = localStorage.getItem('layout') || "trig[0],trig[1];trig[:2]";
 
 // https://matplotlib.org/stable/gallery/color/named_colors.html
 colors = [
@@ -273,19 +273,34 @@ function eventCallback(type, evt) {
     }
 }
 
-var showScene = false;
+var viewSceneState = 0;
+
+function isSceneDisplayed() {
+    return viewSceneState % 3 > 0;
+}
 
 function toggleScene(state) {
     if (state === undefined) {
-        showScene = !showScene;
+        viewSceneState++;
     } else {
         if (showScene == state) {
             return;
         }
-        showScene = state;
+        viewSceneState = state;
     }
 
-    document.body.classList.toggle('showScene', showScene);
+    let showBoth = false;
+    let showSceneOnly = false;
+
+    if (viewSceneState % 3 == 1) {
+        showBoth = true;
+    } else if (viewSceneState % 3 == 2) {
+        showSceneOnly = true
+    }
+
+    document.body.classList.toggle('showBoth', showBoth);
+    document.body.classList.toggle('showSceneOnly', showSceneOnly);
+
     scene.resize();
     shouldResize = true;
 }
@@ -324,7 +339,7 @@ let draw = () => {
 
     plots.forEach(plot => plot.draw(xlim, layoutVersion, false));
 
-    if (showScene) {
+    if (isSceneDisplayed()) {
         scene.render();
     }
 }

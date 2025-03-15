@@ -38,18 +38,26 @@
     overflow-y: auto;
 }
 
-.showScene  .left-div {
-  grid-column: 1 / span 1;
-}
-
 .right-div {
     grid-column: 2 / span 0;
     grid-row: 2 / 2;
     position: relative;
 }
 
-.showScene .right-div {
+.showBoth .left-div {
+  grid-column: 1 / span 1;
+}
+
+.showBoth .right-div {
   grid-column: 2 / span 1;
+}
+
+.showSceneOnly .left-div {
+  grid-column: 1 / span 0;
+}
+
+.showSceneOnly .right-div {
+  grid-column: 1 / span 2;
 }
 
 .right-div canvas {
@@ -94,7 +102,7 @@
               <option value="$newPlot">New Plot</option>
               <option value="sin">sin[1]</option>
             </select>
-            <input id="layout" style="font-size:1em;flex: 1 1 auto" value="trig[0]/trig[1]"></input>
+            <input id="layout" style="font-size:1em;flex: 1 1 auto" value="trig[0];trig[1]"></input>
         </div>
         </p>
     </div>
