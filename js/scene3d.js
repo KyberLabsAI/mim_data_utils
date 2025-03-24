@@ -78,8 +78,8 @@ class ControlableViewer {
 
     updateLocation(position, lookAt) {
         let cam = this.camera;
-        this.cam.position.set(position);
-        this.cam.lookAt(...lookAt);
+        cam.position.set(...position);
+        cam.lookAt(...lookAt);
     }
 }
 
@@ -107,7 +107,7 @@ class Scene3D {
             return;
         }
 
-        this.viewer[cameraIndex].updateLocation(position, lookAt);
+        this.viewers[cameraIndex].updateLocation(position, lookAt);
     }
 
     initScene() {
@@ -206,6 +206,10 @@ class Scene3D {
         for (const [name, entry] of this.objects.entries()) {
             this._removeObjectAndChildren(entry.getObject());
         }
+
+        this.viewers = this.viewers.slice(0, 1); // Only keep the first viewer.
+
+        this.resize();
     }
 
     addObject(obj) {
@@ -361,10 +365,6 @@ function event3DCallback(type, evt, data) {
             let payload = traces.staticData.get(data);
             if (payload.type == '3dMesh') {
                 addUpdateObject(payload);
-            } else if (payload.type == '3dCamera') {
-                scene.addViewer();
-            } else if (payload.type == '3dCameraLocation') {
-                scene.updateCamera(data.cameraIndex, data.position, data.lookAt);
             }
         break;
     }

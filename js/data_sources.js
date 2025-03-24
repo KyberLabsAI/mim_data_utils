@@ -27,6 +27,16 @@ function parsewebSocketData(data) {
             relayout = true;
             break;
 
+        case 'command':
+            let name = data['name'];
+            let payload = data['payload'];
+            if (name == '3dCamera') {
+                scene.addViewer();
+            } else if (name == '3dCameraLocation') {
+                scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
+            }
+            break;
+
         case 'layout':
             layoutDom.value = data['layout'];
             updateLayout();
