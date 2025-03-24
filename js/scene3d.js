@@ -54,25 +54,66 @@ class Mesh3D {
     }
 }
 
+class ControlableViewer {
+    constructor(aspectRation, domElement) {
+        let camera = this.camera = new THREE.PerspectiveCamera(75, aspectRation, 0.001, 1000);
+        camera.position.z = 1;
+        camera.up.set(0, 0, 1)
+
+        this.controls = new OrbitControls(camera, domElement);
+    }
+
+    updateAspect(aspectRation) {
+        this.camera.aspect = aspectRation;
+        this.camera.updateProjectionMatrix();
+    }
+
+    updateControls() {
+        this.controls.update();
+    }
+
+    toggleControls(enabled) {
+        this.controls.enabled = enabled;
+    }
+
+    updateLocation(position, lookAt) {
+        let cam = this.camera;
+        this.cam.position.set(position);
+        this.cam.lookAt(...lookAt);
+    }
+}
+
 class Scene3D {
     constructor(container) {
         this.container = container;
-        this.initScene();
 
+        this.viewers = []
         this.objects = new Map();
         this.currentTimestepData = null;
         this.time = null;
+
+        this.initScene();
+
+    }
+
+    addViewer(aspectRation) {
+        let viewer = new ControlableViewer(aspectRation, this.renderer.domElement);
+        this.viewers.push(viewer);
+        this.resize();
+    }
+
+    updateCamera(cameraIndex, position, lookAt) {
+        if (cameraIndex >= this.viewers.length) {
+            return;
+        }
+
+        this.viewer[cameraIndex].updateLocation(position, lookAt);
     }
 
     initScene() {
         // Scene
         const scene = this.scene = new THREE.Scene();
         scene.background = new THREE.Color(0xaaaaaa); // Light gray background
-
-        // Camera
-        const camera = this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.001, 1000);
-        camera.position.z = 1;
-        camera.up.set(0, 0, 1)
 
         // Renderer
         const renderer = this.renderer = new THREE.WebGLRenderer({
@@ -82,8 +123,15 @@ class Scene3D {
         renderer.shadowMap.enabled = true; // Enable shadows
         document.body.appendChild(renderer.domElement);
 
-        // Orbit Controls
-        const controls = this.controls = new OrbitControls(camera, renderer.domElement);
+        renderer.domElement.addEventListener('pointerdown', (evt) => {
+            let viewerIdx = this._getViewerIndexAt(evt.offsetX, evt.offsetY);
+            this.viewers.forEach((viewer, i) => {
+                viewer.toggleControls(i == viewerIdx);
+            })
+        });
+
+        // Start with a single view on the scene.
+        this.addViewer(window.innerWidth / window.innerHeight);
 
         // Light
         const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
@@ -117,6 +165,10 @@ class Scene3D {
         // scene.add(cameraHelper); // Helpful for visualizing
 
         this.resize();
+    }
+
+    _getViewerIndexAt(x, y) {
+        return Math.floor(x / this.viewerWidth);
     }
 
     _removeObjectAndChildren(object) {
@@ -165,6 +217,16 @@ class Scene3D {
         this.time = time;
     }
 
+    _renderViewer(viewer, idx) {
+        let renderer = this.renderer;
+        let x = idx * this.viewerWidth;
+        renderer.setViewport(x, 0, this.viewerWidth, this.height);
+        renderer.setScissor(x, 0, this.viewerWidth, this.height);
+        renderer.setScissorTest(true);
+        renderer.render(this.scene, viewer.camera);
+        renderer.setScissorTest(false);
+    }
+
     render() {
         let time;
         if (this.time !== null) {
@@ -183,18 +245,30 @@ class Scene3D {
             }
         }
 
-        this.controls.update(); // Update orbit controls
-        this.renderer.render(this.scene, this.camera);
+
+        this.viewers.forEach((viewer, i) => {
+            viewer.updateControls();
+            this._renderViewer(viewer, i);
+        })
+
     }
 
     resize() {
         // this.container.removeChild(canvas);
         const width = this.container.offsetWidth;
         const height = this.container.offsetHeight;
+        this.width = width;
+        this.height = height;
 
         this.renderer.setSize(width, height);
-        this.camera.aspect = width / height;
-        this.camera.updateProjectionMatrix();
+
+        let viewers = this.viewers;
+        let splits = viewers.length;
+        let viewerWidth = this.viewerWidth = Math.floor(width / splits);
+
+        viewers.forEach(viewer => {
+            viewer.updateAspect(viewerWidth / height);
+        });
     }
 }
 
@@ -287,6 +361,10 @@ function event3DCallback(type, evt, data) {
             let payload = traces.staticData.get(data);
             if (payload.type == '3dMesh') {
                 addUpdateObject(payload);
+            } else if (payload.type == '3dCamera') {
+                scene.addViewer();
+            } else if (payload.type == '3dCameraLocation') {
+                scene.updateCamera(data.cameraIndex, data.position, data.lookAt);
             }
         break;
     }

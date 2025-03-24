@@ -283,7 +283,7 @@ function toggleScene(state) {
     if (state === undefined) {
         viewSceneState++;
     } else {
-        if (showScene == state) {
+        if (viewSceneState == state) {
             return;
         }
         viewSceneState = state;
