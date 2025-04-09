@@ -65,7 +65,17 @@ function parsewebSocketData(data) {
                     continue;
                 }
 
-                if (!Array.isArray(value)) {
+                let valueType = typeof value;
+
+                if (valueType === 'boolean') {
+                    value = value ? 1 : 0;
+                }
+
+                if (valueType === 'number') {
+                    value = [value]
+                } else if (valueType == 'string') {
+                    continue; // Ignorning strings for now.
+                } else if (!Array.isArray(value)) {
                     value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
                 }
 

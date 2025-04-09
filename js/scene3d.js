@@ -325,6 +325,14 @@ function colorArrayToNumber(arr) {
     return res;
 }
 
+function stepBack() {
+    scene.time -= 0.05;
+}
+
+function stepForward() {
+    scene.time += 0.05;
+}
+
 function addUpdateObject(data) {
     if (!(data.vertices instanceof Float32Array)) {
         data.vertices = new Float32Array(data.vertices)
