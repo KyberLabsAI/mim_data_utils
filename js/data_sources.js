@@ -74,9 +74,11 @@ function parsewebSocketData(data) {
                 if (valueType === 'number') {
                     value = [value]
                 } else if (valueType == 'string') {
-                    continue; // Ignorning strings for now.
-                } else if (!Array.isArray(value)) {
-                    value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
+                    if (value.startsWith("array('d', [") || value.startsWith("array('f', [")) {
+                        value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
+                    } else {
+                        continue; // Ignorning generic strings for now.
+                    }
                 }
 
                 traces.record(key, value)
