@@ -75,8 +75,11 @@ class Plot {
         this.legend.textContent = '';
     }
 
-    addLine(label, lineData, style) {
+    addLine(name, idx, lineData, style) {
+        let label = `${name}[${idx}]`
         this.lines.push({
+            dataName: name,
+            dataIdx: idx,
             label: label,
             lineData: lineData,
             style: style
@@ -98,8 +101,25 @@ class Plot {
         this.lineDrawer.setViewport(xl, yl, xh, yh);
     }
 
-    draw(xlim, dataVersion, axesOnly) {
-        this.axesDrawer.draw();
+    updateLegendValues(time) {
+        let entries = Array.from(this.legend.childNodes);
+
+        this.lines.forEach((line, i) => {
+            let data = traces.dataAtTime(line.dataName, time);
+            let label = line.label;
+
+            // In case the user clicked outside of available data.
+            if (data) {
+                label += ': ' + data[line.dataIdx].toFixed(3);
+            }
+            entries[i].textContent = label;
+        })
+    }
+
+    draw(time, xlim, dataVersion, axesOnly) {
+        this.axesDrawer.draw([new VerticalLine(time, 'orange')]);
+
+        this.updateLegendValues(time);
 
         if (axesOnly) {
             return

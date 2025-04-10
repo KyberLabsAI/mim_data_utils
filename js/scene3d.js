@@ -221,6 +221,14 @@ class Scene3D {
         this.time = time;
     }
 
+    absoluteTime() {
+        if (this.time == null) {
+            return traces.getLastTime();
+        } else {
+            return this.time;
+        }
+    }
+
     _renderViewer(viewer, idx) {
         let renderer = this.renderer;
         let x = idx * this.viewerWidth;

@@ -175,7 +175,7 @@ function updateLayout() {
             for (let idx = from; idx < to; idx++) {
                 let color = colors[colorIdx++ % colors.length];
                 plot.addLine(
-                    `${part.name}[${idx}]`,
+                    part.name, idx,
                     traces.getLineData(part.name, idx),
                     {r: color[0]/256, g: color[1]/256, b: color[2]/256, z:-colorIdx * 0.001});
             }
@@ -337,7 +337,9 @@ let draw = () => {
 
     let xlim = updatePlotViewport();
 
-    plots.forEach(plot => plot.draw(xlim, layoutVersion, false));
+    let absTime = scene.absoluteTime();
+
+    plots.forEach(plot => plot.draw(absTime, xlim, layoutVersion, false));
 
     if (isSceneDisplayed()) {
         scene.render();

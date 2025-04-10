@@ -79,6 +79,13 @@ class TickDrawer {
     }
 }
 
+class VerticalLine {
+    constructor(x, style) {
+        this.x = x;
+        this.style = style;
+    }
+}
+
 class AxesDrawer {
     constructor(canvas, canvasGrid, margin, eventCallback) {
         this.canvas = canvas;
@@ -144,20 +151,7 @@ class AxesDrawer {
         this.yTo = y1;
     }
 
-    drawGrid() {
-        let ctx = this.ctxGrid;
-        let canvas = this.canvasGrid;
-
-        ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-
-        ctx.save();
-        ctx.translate(0.5, 0.5);
-        ctx.scale(4, 4);
-
-        ctx.restore();
-    }
-
-    draw() {
+    draw(verticalLines) {
         let ctx = this.ctx;
         let ctxGrid = this.ctxGrid;
         let canvas = this.canvas;
@@ -198,6 +192,28 @@ class AxesDrawer {
         this.strokeLine(this.mouseX, margin[0] + this.axisHeight, this.mouseX, margin[0]);
         this.strokeLine(margin[3], this.mouseY, margin[0] + this.axisWidth, this.mouseY);
 
+        // Draw user vertica; lines.
+        for (let line of verticalLines) {
+            let pos = this.tickDrawerX.tickToPos(line.x);
+            ctx.save();
+            ctx.strokeStyle = line.style;
+            ctx.fillStyle = line.style;
+            this.strokeLine(pos, margin[0] + this.axisHeight, pos, margin[0]);
+
+            let text = `(${line.x.toFixed(3)})`;
+            let textWidth = ctx.measureText(text).width;
+
+            let y = margin[0] + this.axisHeight - 8;
+
+            ctx.fillStyle = 'white';
+            ctx.fillRect(pos + 5, y - 12, textWidth, 18);
+
+            ctx.fillStyle = line.style;
+            ctx.fillText(text, pos + 5, y);
+            ctx.restore();
+        }
+
+        // Mouse axes label.
         ctx.fillText(`(${valX}, ${valY})`, this.mouseX + 5, this.mouseY - 5)
 
         ctx.restore();
