@@ -118,7 +118,10 @@ class SeriesData {
     }
 
     willEvictData() {
-        return this.chunks.at(-1).isFull();
+        return (
+            this.chunks.length >= this._maxChunks() &&
+            this.chunks.at(-1).isFull()
+        );
     }
 
     firstTime() {
