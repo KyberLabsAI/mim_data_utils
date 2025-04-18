@@ -23,6 +23,7 @@ function parsewebSocketData(data) {
             wsMaxData = data['maxData'];
             scene.clear();
             traces.clear(wsMaxData);
+            freeZoom();
             toggleScene(false);
             relayout = true;
             break;

@@ -211,6 +211,12 @@ let ignoreMouseClick = false;
 
 let zoomStack = [];
 
+function freeZoom() {
+    layout.zoomX = null;
+    scene.setTime(null);
+    freeze(false);
+}
+
 function eventCallback(type, evt) {
     switch(type) {
         case "AxesDrawer::mousemove":
@@ -251,9 +257,7 @@ function eventCallback(type, evt) {
             if (zoomStack.length > 0) {
                 layout.zoomX = zoomStack.pop()
             } else {
-                layout.zoomX = null;
-                scene.setTime(null);
-                freeze(false);
+                freeZoom();
             }
             updatePlotViewport();
             evt.preventDefault();
