@@ -13,7 +13,7 @@ class Plot {
 
         this.updateCanvasStyle(domParent.clientWidth, 300);
 
-        legend.setAttribute('style', 'position:absolute;right:20px;text-align:right;background:white');
+        legend.setAttribute('class', 'legend');
 
         dom.appendChild(canvasGrid);
         dom.appendChild(canvasLine);
@@ -91,7 +91,7 @@ class Plot {
             let legendDiv = document.createElement('div');
             legendDiv.textContent = line.label;
             let borderColor = `rgb(${style.r * 256}, ${style.g * 256}, ${style.b * 256})`;
-            legendDiv.style = `border-right: 3px solid ${borderColor}; padding-right: 3px; margin-bottom: 3px`
+            legendDiv.style = `border-color: ${borderColor}`
             this.legend.appendChild(legendDiv);
         });
     }
