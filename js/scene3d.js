@@ -134,7 +134,7 @@ class Scene3D {
         this.addViewer(window.innerWidth / window.innerHeight);
 
         // Light
-        const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+        const ambientLight = new THREE.AmbientLight(0x404040, 3.); // Soft white light
         scene.add(ambientLight);
 
         const directionalLight = new THREE.DirectionalLight(0xffffff, 3.); // White directional light
