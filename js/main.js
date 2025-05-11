@@ -67,28 +67,20 @@ function updatePlotViewport() {
     let xlim = getXLim();
 
     plots.forEach(plot => {
-        let ylim;
+        let ylim = null;
         plot.lines.forEach(line => {
-            ylim = line.lineData.findYLim(line.lineData.findXLimIndices(xlim), ylim);
+            ylim = traces.yLim(xlim[0], xlim[1], line.dataName, line.dataIdx, ylim);
         });
 
         if (!ylim) {
-            ylim = [-0.1, 0.1];
-        } else if (ylim[0] == ylim[1]) {
-            ylim[0] -= 0.1;
-            ylim[1] += 0.1;
+            ylim = new Lim(-0.1, 0.1);
+        } else if (ylim.from == ylim.to) {
+            ylim.expandByMargin(0.1);
         } else {
-            let yspace = (ylim[1] - ylim[0]) * 0.1;
-            ylim[0] -= yspace;
-            ylim[1] += yspace;
+            ylim.expandByMargin((ylim.to - ylim.from) * 0.1);
         }
 
-        if (ylim[1] - ylim[0] < 1e-4) {
-            ylim[1] = 0.01;
-            ylim[0] = -0.01;
-        }
-
-        plot.setViewport(xlim[0], ylim[0], xlim[1], ylim[1]);
+        plot.setViewport(xlim[0], ylim.from, xlim[1], ylim.to);
     });
 
     layoutVersion += 1;
@@ -361,19 +353,31 @@ function firstNewData() {
 }
 
 
-// let counter = 600;
-// let addSampleData = () => {
-//     setTimeout(addSampleData, 1);
+let counter = 600;
+let addSampleData = (once) => {
+    // if (isFrozen) {
+    //     return;
+    // }
 
-//     // if (isFrozen) {
-//     //     return;
-//     // }
-//     traces.beginTimestep(counter * 0.001, 200000);
-//     traces.record('F', [Math.random(), Math.sin(Math.PI * 0.1 * counter)]);
-//     traces.endTimestep();
-//     counter += 1;
-// }
-// addSampleData();
+    let data = [];
+    for (let i = 0; i < 10; i++) {
+        data.push(Math.sin(Math.PI * i * 0.1 * counter))
+    }
+
+    traces.beginTimestep(counter * 0.001, 200000);
+    traces.record('sin', data);
+    traces.endTimestep();
+    counter += 1;
+
+    if (!once) {
+        setTimeout(addSampleData, 1);
+    }
+}
+
+while (counter < 600 + 60 * 1000) {
+    addSampleData(true);
+}
+addSampleData(false);
 
 firstNewData();
 draw();

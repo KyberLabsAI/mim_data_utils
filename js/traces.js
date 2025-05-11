@@ -6,6 +6,39 @@ function assert(cond, desc) {
     }
 }
 
+class Lim {
+    constructor(from, to) {
+        this.from = from;
+        this.to = to;
+    }
+
+    copy() {
+        return new Lim(this.from, this.to);
+    }
+
+    extend(other) {
+        if (other.from < this.from) {
+            this.from = other.from;
+        }
+        if (other.to > this.to) {
+            this.to = other.to
+        }
+    }
+
+    extendByValue(val) {
+        if (val < this.from) {
+            this.from = val;
+        } else if (val > this.to) {
+            this.to = val;
+        }
+    }
+
+    expandByMargin(val) {
+        this.from -= val;
+        this.to += val;
+    }
+}
+
 class SeriesDataChunk {
     constructor(name, dim, size) {
         this.name = name;
@@ -13,6 +46,7 @@ class SeriesDataChunk {
         this.dim = dim;
         this.times = new Float32Array(size);
         this.timedData = Array.from(Array(dim)).map(_ => new Float32Array(size));
+        this.timedDataYLimits = Array.from(Array(dim)).map(_ => new Lim(0, 0));
         this.timeFrom = 0;
         this.timeTo = 0;
         this.entries = 0;
@@ -22,9 +56,18 @@ class SeriesDataChunk {
         return this.entries == this.size;
     }
 
+    dataYLim(index) {
+        return this.timedDataYLimits[index];
+    }
+
     record(time, newData) {
+        let timedDataYLimits = this.timedDataYLimits;
+
         if (this.entries == 0) {
             this.timeFrom = this.timeTo = time;
+            for (let i = 0; i < this.dim; i++) {
+                timedDataYLimits[i].from = timedDataYLimits[i].to = newData[i];
+            }
         } else if (time < this.timeFrom) {
             this.timeFrom = time;
         } else if (time > this.timeTo) {
@@ -34,7 +77,15 @@ class SeriesDataChunk {
         let entries = this.entries;
         this.times[entries] = time;
         this.timedData.forEach((series, i) => {
-            series[entries] = newData[i];
+            const val = newData[i]
+            const lim = timedDataYLimits[i];
+
+            series[entries] = val;
+            if (val > lim.to) {
+                lim.to = val;
+            } else if (val < lim.from) {
+                lim.from = val;
+            }
         });
         this.entries++;
     }
@@ -48,16 +99,21 @@ class SeriesDataChunk {
         }
     }
 
-    _dataAtIndex(index) {
-        return this.timedData.map(d => d[index]);
+    _valueIndexAtEntrie(index, entry) {
+        return this.timedData[index][entry];
     }
 
-    /**
-     * Returns the data entry is stored at or before the given time.
-     */
-    dataAtTime(time) {
+    _valueIndexAtEntries(index, entryFrom, entryTo, callback) {
+        let indexTimedData = this.timedData[index];
+        for (let i = entryFrom; i <= entryTo; i++) {
+            callback(indexTimedData[i]);
+        }
+    }
+
+
+    dataAtTimeIndex(time) {
         if (time < this.timeFrom || this.entires == 0) {
-            return undefined;
+            return null;
         }
 
         let last = 0;
@@ -69,8 +125,22 @@ class SeriesDataChunk {
             last = i;
         }
 
-        return this._dataAtIndex(last);
+        return last;
     }
+
+    /**
+     * Returns the data entry is stored just after the given time.
+     */
+    dataAtTime(time) {
+        let index = this.dataAtTimeIndex(time);
+
+        if (index === null) {
+            return null;
+        } else {
+            return this.timedData.map(d => d[index]);
+        }
+    }
+
 }
 
 class SeriesData {
@@ -83,7 +153,15 @@ class SeriesData {
         this.maxTime = 0;
         this.maxSize = maxSize;
 
+        this.dataVersion = 0;
+
         this._addChunk();
+
+
+        this.xLimCache = {
+            dataVersion: -1,
+            ...this.xLimIndices(0, 0)
+        };
     }
 
     dataAtTime(time) {
@@ -157,11 +235,89 @@ class SeriesData {
         }
 
         this.chunks.at(-1).record(time, data);
+        this.dataVersion ++;
         return true;
+    }
+
+    xLimIdx(time) {
+        let chunks = this.chunks;
+
+        let cIdx = binarySearch(0, this.chunks.length - 1, time, (idx) => {
+            return chunks[idx].timeTo;
+        });
+
+        let chunk = chunks[cIdx];
+        let pIdx = binarySearch(0, chunk.entries - 1, time, (idx) => {
+            return chunk.times[idx];
+        });
+
+        return {
+            chunkIdx: cIdx,
+            pointIdx: pIdx
+        };
+    }
+
+    xLimIndices(timeFrom, timeTo) {
+        const cache = this.xLimCache;
+        if (cache && this.dataVersion == cache.dataVersion &&
+            cache.time.from == timeFrom && cache.time.to == timeTo
+        ) {
+            return cache;
+        } else {
+            return {
+                time: new Lim(timeFrom, timeTo),
+                from: this.xLimIdx(timeFrom),
+                to: this.xLimIdx(timeTo),
+            }
+        }
+    }
+
+    _findYLimPartialChunk(xIdx, pFrom, pTo, index, yLim) {
+        let chunck = this.chunks[xIdx];
+
+        if (yLim === null) {
+            let val = chunck._valueIndexAtEntrie(index, pFrom);
+            yLim = new Lim(val, val);
+        }
+
+        chunck._valueIndexAtEntries(index, pFrom, pTo, (val) => {
+            yLim.extendByValue(val);
+        });
+
+        return yLim;
+    }
+
+    yLim(timeFrom, timeTo, index, yLim) {
+        let xLimIndices = this.xLimIndices(timeFrom, timeTo)
+
+        let x0c = xLimIndices.from.chunkIdx;
+        let x0p = xLimIndices.from.pointIdx;
+        let x1c = xLimIndices.to.chunkIdx;
+        let x1p = xLimIndices.to.pointIdx;
+
+        // Look up the ylim in the middle from chunk limits.
+        for (let cidx = x0c + 1; cidx < x1c; cidx++) {
+            let chunkYLim = this.chunks[cidx].dataYLim(index);
+
+            if (yLim === null) {
+                yLim = chunkYLim.copy();
+            } else {
+                yLim.extend(chunkYLim);
+            }
+        }
+
+        if (x0c == x1c) {
+            yLim = this._findYLimPartialChunk(x0c, x0p, x1p, index, yLim);
+        } else {
+            yLim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].to - 1, index, yLim);
+            yLim = this._findYLimPartialChunk(x1c, 0, x1p, index, yLim);
+        }
+
+        return yLim;
     }
 }
 
-CHUNK_SIZE = 2048;
+CHUNK_SIZE = 1024;
 
 class Traces {
     constructor(maxSize, callbackFn) {
@@ -248,9 +404,9 @@ class Traces {
 
         for (let i = 0; i < value.length; i++) {
             let entryName = this._lineDataKey(name, i);
-            if (this.lineData.has(entryName)) {
-                this.lineData.get(entryName).appendPoint(this.time, value[i])
-            }
+            // if (this.lineData.has(entryName)) {
+            //     this.lineData.get(entryName).appendPoint(this.time, value[i])
+            // }
         }
 
         if (newSeries) {
@@ -286,17 +442,21 @@ class Traces {
         return Array.from(this.seriesData.keys());
     }
 
-    getLineData(name, index) {
+    getLineData(name, index, width) {
         let key = this._lineDataKey(name, index);
 
-        if (this.lineData.has(key)) {
-            return this.lineData.get(key);
-        }
+        // if (this.lineData.has(key)) {
+        //     return this.lineData.get(key);
+        // }
 
 
         let lineData = new LineData(this.maxSize);
         this.fillLineData(lineData, name, index);
         this.lineData.set(key, lineData);
         return lineData;
+    }
+
+    yLim(timeFrom, timeTo, name, index, yLim) {
+        return this.seriesData.get(name).yLim(timeFrom, timeTo, index, yLim);
     }
 }

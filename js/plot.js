@@ -130,8 +130,9 @@ class Plot {
                 this.lineDrawer.clear();
             } else {
                 this.lines.forEach(line => {
-                    let xlimIndices = line.lineData.findXLimIndices(xlim);
-                    let chunks = line.lineData.chunks;
+                    let lineData = traces.getLineData(line.dataName, line.dataIdx);
+                    let xlimIndices = lineData.findXLimIndices(xlim);
+                    let chunks = lineData.chunks;
                     for (let idx = xlimIndices.from.chunkIdx; idx <= xlimIndices.to.chunkIdx; idx++) {
                         this.lineDrawer.drawLineChunk(chunks[idx], line.style)
                     }
