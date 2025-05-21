@@ -254,50 +254,6 @@ class LineData {
         }
     }
 
-    _findYLimPartialChunk(xIdx, pFrom, pTo, ylim) {
-        let chunk = this.chunks[xIdx];
-        for (let pIdx = pFrom; pIdx <= pTo; pIdx ++) {
-            let y = chunk.getLineCenterY(pIdx);
-            if (ylim === undefined) {
-                ylim = [y, y];
-            } else if (y < ylim[0]) {
-                ylim[0] = y;
-            } else if (y > ylim[1]) {
-                ylim[1] = y;
-            }
-        }
-        return ylim;
-    }
-
-    // Returns the yi of point i with xi = max x st xi < x.
-    findYLim(xlimIndices, ylim) {
-        let x0c = xlimIndices.from.chunkIdx;
-        let x0p = xlimIndices.from.pointIdx;
-        let x1c = xlimIndices.to.chunkIdx;
-        let x1p = xlimIndices.to.pointIdx;
-
-        // Look up the ylim in the middle from chunk limits.
-        for (let cidx = x0c + 1; cidx < x1c; cidx++) {
-            let chunk = this.chunks[cidx];
-            if (ylim === undefined) {
-                ylim = [chunk.fromY, chunk.toY];
-            } else if (chunk.fromY < ylim[0]) {
-                ylim[0] = chunk.fromY;
-            } else if (chunk.toY > ylim[1]) {
-                ylim[1] = chunk.toY;
-            }
-        }
-
-        if (x0c == x1c) {
-            ylim = this._findYLimPartialChunk(x0c, x0p, x1p, ylim);
-        } else {
-            ylim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].to - 1, ylim);
-            ylim = this._findYLimPartialChunk(x1c, 0, x1p, ylim);
-        }
-
-        return ylim;
-    }
-
     _addChunk() {
         let lastChunck = this.chunks.at(-1);
         let chunk = new LineChunck(this.chunkSize);
