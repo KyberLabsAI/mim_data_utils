@@ -404,9 +404,9 @@ class Traces {
 
         for (let i = 0; i < value.length; i++) {
             let entryName = this._lineDataKey(name, i);
-            // if (this.lineData.has(entryName)) {
-            //     this.lineData.get(entryName).appendPoint(this.time, value[i])
-            // }
+            if (this.lineData.has(entryName)) {
+                this.lineData.get(entryName).appendPoint(this.time, value[i])
+            }
         }
 
         if (newSeries) {
@@ -445,10 +445,9 @@ class Traces {
     getLineData(name, index, width) {
         let key = this._lineDataKey(name, index);
 
-        // if (this.lineData.has(key)) {
-        //     return this.lineData.get(key);
-        // }
-
+        if (this.lineData.has(key)) {
+            return this.lineData.get(key);
+        }
 
         let lineData = new LineData(this.maxSize);
         this.fillLineData(lineData, name, index);

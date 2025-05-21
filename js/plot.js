@@ -125,21 +125,23 @@ class Plot {
             return
         }
 
+        let updated = 0;
         if (this.lastDataVersion != dataVersion) {
             if (this.lines.length == 0) {
                 this.lineDrawer.clear();
             } else {
-                this.lines.forEach(line => {
+                this.lines.toReversed().forEach(line => {
                     let lineData = traces.getLineData(line.dataName, line.dataIdx);
                     let xlimIndices = lineData.findXLimIndices(xlim);
                     let chunks = lineData.chunks;
                     for (let idx = xlimIndices.from.chunkIdx; idx <= xlimIndices.to.chunkIdx; idx++) {
-                        this.lineDrawer.drawLineChunk(chunks[idx], line.style)
+                        updated += this.lineDrawer.drawLineChunk(chunks[idx], line.style)
                     }
                 });
             }
 
             this.lastDataVersion = dataVersion;
+            // console.log(updated);
         }
     }
 }

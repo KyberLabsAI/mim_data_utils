@@ -359,25 +359,27 @@ let addSampleData = (once) => {
     //     return;
     // }
 
-    let data = [];
-    for (let i = 0; i < 10; i++) {
-        data.push(Math.sin(Math.PI * i * 0.1 * counter))
-    }
+    for (let n = 0; n < 1; n++) {
+        let data = [];
+        for (let i = 0; i < 10; i++) {
+            data.push(Math.sin(Math.PI * i * 0.1 * counter))
+        }
 
-    traces.beginTimestep(counter * 0.001, 200000);
-    traces.record('sin', data);
-    traces.endTimestep();
-    counter += 1;
+        traces.beginTimestep(counter * 0.001, 200000);
+        traces.record('sin', data);
+        traces.endTimestep();
+        counter += 1;
+    }
 
     if (!once) {
         setTimeout(addSampleData, 1);
     }
 }
 
-while (counter < 600 + 60 * 1000) {
+while (counter < 600 + 300 * 1000) {
     addSampleData(true);
 }
-addSampleData(false);
+// addSampleData(false);
 
 firstNewData();
 draw();

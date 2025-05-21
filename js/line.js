@@ -1,3 +1,8 @@
+let GL_ARRAY_BUFFER = 34962;
+let GL_ELEMENT_ARRAY_BUFFER = 34963;
+
+
+
 class GLDrawer {
     constructor(canvas, margin) {
         this.canvas = canvas;
@@ -51,17 +56,21 @@ class GLDrawer {
 class GPUBufferHandler {
     constructor(buffer, array_type) {
         this.buffer = buffer;
-        this.array_type |= gl.ARRAY_BUFFER;
+        this.array_type = array_type || GL_ARRAY_BUFFER;
         this.lastDataVersion = -1;
     }
 
     bindSync(gl, dataVersion, data) {
+        let res = 0;
         gl.bindBuffer(this.array_type, this.buffer);
 
         if (this.lastDataVersion < dataVersion) {
             gl.bufferData(this.array_type, data, gl.DYNAMIC_DRAW);
+            res = 1;
         }
         this.lastDataVersion = dataVersion;
+
+        return res;
     }
 }
 
@@ -70,7 +79,7 @@ class GPUData {
         this.parent = parent;
         this.buffer = new Map();
         this.data = data;
-        this.array_type |= gl.ARRAY_BUFFER;
+        this.array_type = array_type || GL_ARRAY_BUFFER;
     }
 
     bind(gl) {
@@ -78,7 +87,7 @@ class GPUData {
             this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer(), this.array_type));
         }
 
-        this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.data);
+        return this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.data);
     }
 }
 
@@ -100,7 +109,7 @@ class LineChunck {
 
         this.gpuLineCenter = new GPUData(this, this.lineCenter);
         this.gpuLineTangential = new GPUData(this, this.lineTangential);
-        this.gpuIndex
+        this.gpuIndexBuffer = new GPUData(this, this.indexBuffer, GL_ELEMENT_ARRAY_BUFFER);
     }
 
     getLineCenterY(i) {
@@ -118,7 +127,7 @@ class LineChunck {
     }
 
     addIndex(indexBufferOffset, offset) {
-        this.indexBuffer[this.indexBufferIdx + indexBufferOffset] = this.to - 1 - offset;
+        this.indexBuffer[this.indexBufferIdx + indexBufferOffset] = this.to - 1 + offset;
     }
 
     appendPoint(x1, y1) {
@@ -156,12 +165,12 @@ class LineChunck {
         this.addVertex(x1, y1, -tx, -ty);
         this.addVertex(x1, y1, tx, ty);
 
-        this.addIndex(0, -3);
-        this.addIndex(1, -2);
-        this.addIndex(2, -1);
-        this.addIndex(3, -1);
-        this.addIndex(4, 0);
-        this.addIndex(5, -3);
+        this.addIndex(0, -1);
+        this.addIndex(1, -0);
+        this.addIndex(2, -2);
+        this.addIndex(3, -3);
+        this.addIndex(4, -2);
+        this.addIndex(5, -1);
 
         this.indexBufferIdx += 6;
 
@@ -204,7 +213,7 @@ let binarySearch = (min, max, x, valFn) => {
 class LineData {
     constructor(maxData) {
         this.maxData = maxData;
-        this.chunkSize = 32 * 512;
+        this.chunkSize = 16 * 512;
         this.clear();
     }
 
@@ -333,15 +342,19 @@ class GLLineDrawer {
     }
 
     bindData(gpuData) {
-        gpuData.bind(this.ctx.gl);
+        return gpuData.bind(this.ctx.gl);
     }
 
     bindAttributeData(attributeName, gpuData, size) {
         const gl = this.ctx.gl;
 
+        let updated = this.bindData(gpuData);
+
         const attribute = gl.getAttribLocation(this.program, attributeName);
         gl.enableVertexAttribArray(attribute);
         gl.vertexAttribPointer(attribute, size, gl.FLOAT, false, 0, 0);
+
+        return updated;
     }
 
     clear() {
@@ -355,9 +368,9 @@ class GLLineDrawer {
         let program = this.program;
         gl.useProgram(program);
 
-        this.bindData(lineChunk.indexBuffer)
-        this.bindAttributeData('lineCenter', lineChunk.gpuLineCenter, 2, );
-        this.bindAttributeData('lineTangential', lineChunk.gpuLineTangential, 2);
+        let updated = this.bindData(lineChunk.gpuIndexBuffer)
+        updated += this.bindAttributeData('lineCenter', lineChunk.gpuLineCenter, 2);
+        updated += this.bindAttributeData('lineTangential', lineChunk.gpuLineTangential, 2);
 
         lineChunk.wasBuffered = true;
 
@@ -371,7 +384,12 @@ class GLLineDrawer {
 
         gl.uniform1f(this.zUniformLocation, style.z);
 
-        gl.drawArrays(gl.TRIANGLES, lineChunk.from, lineChunk.to - lineChunk.from);
+        let vec2trig = x => (x / 4) * 6
+
+        gl.drawElements(gl.TRIANGLES, vec2trig(lineChunk.to - lineChunk.from),
+            gl.UNSIGNED_SHORT, vec2trig(lineChunk.from));
+
+        return updated;
     }
 
     setViewport(xl, yl, xh, yh) {
