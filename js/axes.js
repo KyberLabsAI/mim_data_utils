@@ -39,7 +39,7 @@ class TickDrawer {
         let tickMax = to - (to % tickStepSize);
 
         this.drawnTicks.clear();
-        for (let tick = tickMin; tick <= tickMax + 0.00000001; tick += tickStepSize) {
+        for (let tick = tickMin; tick <= tickMax + tickStepSize / 2; tick += tickStepSize) {
             this.drawTick(tick, true, 0);
         }
     }
