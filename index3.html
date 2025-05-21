@@ -78,9 +78,14 @@
 .legend > div {
   border-width: 0;
   border-style: solid;
-  border-right-width: 3px; 
-  padding-right: 3px; 
+  border-right-width: 3px;
+  padding-right: 3px;
   margin-bottom: 3px
+}
+
+.message {
+  font-size: 16px;
+  font-weight: bold;
 }
 
 </style>
@@ -122,6 +127,7 @@
             </select>
             <input id="layout" style="font-size:1em;flex: 1 1 auto" value="trig[0];trig[1]"></input>
         </div>
+        <div id="message" class="message"></div>
         </p>
     </div>
     <div class="left-div" id="plots"></div>
