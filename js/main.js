@@ -376,10 +376,14 @@ let addSampleData = (once) => {
     }
 }
 
-while (counter < 600 + 300 * 1000) {
-    addSampleData(true);
+if (window.location.hash == '#example-data') {
+    layoutDom.value = 'sin[:]'
+
+    while (counter < 600 + 300 * 1000) {
+        addSampleData(true);
+    }
+    addSampleData(false);
 }
-// addSampleData(false);
 
 firstNewData();
 draw();
