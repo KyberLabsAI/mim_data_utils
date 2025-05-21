@@ -49,31 +49,33 @@ class GLDrawer {
 }
 
 class GPUBufferHandler {
-    constructor(buffer) {
+    constructor(buffer, array_type) {
         this.buffer = buffer;
+        this.array_type |= gl.ARRAY_BUFFER;
         this.lastDataVersion = -1;
     }
 
     bindSync(gl, dataVersion, data) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+        gl.bindBuffer(this.array_type, this.buffer);
 
         if (this.lastDataVersion < dataVersion) {
-            gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+            gl.bufferData(this.array_type, data, gl.DYNAMIC_DRAW);
         }
         this.lastDataVersion = dataVersion;
     }
 }
 
 class GPUData {
-    constructor(parent, data) {
+    constructor(parent, data, array_type) {
         this.parent = parent;
         this.buffer = new Map();
         this.data = data;
+        this.array_type |= gl.ARRAY_BUFFER;
     }
 
     bind(gl) {
         if (!this.buffer.has(gl)) {
-            this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer()));
+            this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer(), this.array_type));
         }
 
         this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.data);
@@ -86,6 +88,7 @@ class LineChunck {
         this.points = 4 * size; // There are 4 entires per stored point.
         this.lineCenter = new Float32Array(2 * this.points);
         this.lineTangential = new Float32Array(2 * this.points);
+        this.indexBuffer = new Uint16Array(6 * size);
 
         this.from = 0;
         this.to = 0;
@@ -93,9 +96,11 @@ class LineChunck {
         this.toY = 0;
         this.lastPoint = null;
         this.dataVersion = 0;
+        this.indexBufferIdx = 0;
 
         this.gpuLineCenter = new GPUData(this, this.lineCenter);
         this.gpuLineTangential = new GPUData(this, this.lineTangential);
+        this.gpuIndex
     }
 
     getLineCenterY(i) {
@@ -110,6 +115,10 @@ class LineChunck {
         this.lineTangential[2 * to + 1] = ty;
 
         this.to += 1;
+    }
+
+    addIndex(indexBufferOffset, offset) {
+        this.indexBuffer[this.indexBufferIdx + indexBufferOffset] = this.to - 1 - offset;
     }
 
     appendPoint(x1, y1) {
@@ -142,10 +151,19 @@ class LineChunck {
 
         // We always add 4 vertices for a new line segment. This makes the
         // corners draw nicely.
-        this.addVertex(x0, y0, tx, ty);
         this.addVertex(x0, y0, -tx, -ty);
-        this.addVertex(x1, y1, tx, ty);
+        this.addVertex(x0, y0, tx, ty);
         this.addVertex(x1, y1, -tx, -ty);
+        this.addVertex(x1, y1, tx, ty);
+
+        this.addIndex(0, -3);
+        this.addIndex(1, -2);
+        this.addIndex(2, -1);
+        this.addIndex(3, -1);
+        this.addIndex(4, 0);
+        this.addIndex(5, -3);
+
+        this.indexBufferIdx += 6;
 
         this.dataVersion++;
     }
@@ -314,9 +332,12 @@ class GLLineDrawer {
         this.zUniformLocation = gl.getUniformLocation(program, "u_z");
     }
 
-    bindData(attributeName, gpuData, size) {
+    bindData(gpuData) {
+        gpuData.bind(this.ctx.gl);
+    }
+
+    bindAttributeData(attributeName, gpuData, size) {
         const gl = this.ctx.gl;
-        gpuData.bind(gl);
 
         const attribute = gl.getAttribLocation(this.program, attributeName);
         gl.enableVertexAttribArray(attribute);
@@ -334,8 +355,9 @@ class GLLineDrawer {
         let program = this.program;
         gl.useProgram(program);
 
-        this.bindData('lineCenter', lineChunk.gpuLineCenter, 2, );
-        this.bindData('lineTangential', lineChunk.gpuLineTangential, 2);
+        this.bindData(lineChunk.indexBuffer)
+        this.bindAttributeData('lineCenter', lineChunk.gpuLineCenter, 2, );
+        this.bindAttributeData('lineTangential', lineChunk.gpuLineTangential, 2);
 
         lineChunk.wasBuffered = true;
 
@@ -349,7 +371,7 @@ class GLLineDrawer {
 
         gl.uniform1f(this.zUniformLocation, style.z);
 
-        gl.drawArrays(gl.TRIANGLE_STRIP, lineChunk.from, lineChunk.to - lineChunk.from);
+        gl.drawArrays(gl.TRIANGLES, lineChunk.from, lineChunk.to - lineChunk.from);
     }
 
     setViewport(xl, yl, xh, yh) {
