@@ -54,20 +54,31 @@ class GLDrawer {
 }
 
 class GPUBufferHandler {
-    constructor(buffer, array_type) {
+    constructor(buffer, array_type, to_rel_entries) {
         this.buffer = buffer;
-        this.array_type = array_type || GL_ARRAY_BUFFER;
+        this.array_type = array_type;
+        this.to_rel_entries = to_rel_entries;
         this.lastDataVersion = -1;
+        this.lastTo = -1;
     }
 
-    bindSync(gl, dataVersion, data) {
+    bindSync(gl, dataVersion, to, data) {
         let res = 0;
         gl.bindBuffer(this.array_type, this.buffer);
 
-        if (this.lastDataVersion < dataVersion) {
+        if (this.lastTo == -1) {
             gl.bufferData(this.array_type, data, gl.DYNAMIC_DRAW);
             res = 1;
+        } else if (this.lastDataVersion < dataVersion) {
+            let byteLen = 4;
+            if (data instanceof Uint16Array) {
+                byteLen = 2;
+            }
+            let entryFrom = this.to_rel_entries * this.lastTo;
+            let entryTo = this.to_rel_entries * to;
+            gl.bufferSubData(this.array_type, entryFrom * byteLen, data, entryFrom, entryTo - entryFrom);
         }
+        this.lastTo = to;
         this.lastDataVersion = dataVersion;
 
         return res;
@@ -75,19 +86,21 @@ class GPUBufferHandler {
 }
 
 class GPUData {
-    constructor(parent, data, array_type) {
+    constructor(parent, data, array_type, to_rel_entries) {
         this.parent = parent;
         this.buffer = new Map();
         this.data = data;
-        this.array_type = array_type || GL_ARRAY_BUFFER;
+        this.array_type = array_type;
+        this.to_rel_entries = to_rel_entries;
     }
 
     bind(gl) {
         if (!this.buffer.has(gl)) {
-            this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer(), this.array_type));
+            this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer(), this.array_type, this.to_rel_entries));
         }
 
-        return this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.data);
+        let res = this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.parent.to, this.data);
+        return res;
     }
 }
 
@@ -107,9 +120,9 @@ class LineChunck {
         this.dataVersion = 0;
         this.indexBufferIdx = 0;
 
-        this.gpuLineCenter = new GPUData(this, this.lineCenter);
-        this.gpuLineTangential = new GPUData(this, this.lineTangential);
-        this.gpuIndexBuffer = new GPUData(this, this.indexBuffer, GL_ELEMENT_ARRAY_BUFFER);
+        this.gpuLineCenter = new GPUData(this, this.lineCenter, GL_ARRAY_BUFFER, 2);
+        this.gpuLineTangential = new GPUData(this, this.lineTangential, GL_ARRAY_BUFFER, 2);
+        this.gpuIndexBuffer = new GPUData(this, this.indexBuffer, GL_ELEMENT_ARRAY_BUFFER, 6/4);
     }
 
     getLineCenterY(i) {

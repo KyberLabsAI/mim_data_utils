@@ -35,6 +35,8 @@ function parsewebSocketData(data) {
                 scene.addViewer();
             } else if (name == '3dCameraLocation') {
                 scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
+            } else if (name == 'zoomReset') {
+                freeZoom();
             }
             break;
 
@@ -140,8 +142,10 @@ function connectViaWebSocket() {
         }
     }
     ws.onerror = function (event) {
-        ws.isClosed = true;
-        ws = null;
+        ws_internal.isClosed = true;
+        if (ws_internal === ws) {
+            ws = null;
+        }
         domMessage.textContent = 'Error with streaming. Is the data streamed?'
     };
 }

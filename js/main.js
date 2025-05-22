@@ -207,6 +207,7 @@ function freeZoom() {
     layout.zoomX = null;
     scene.setTime(null);
     freeze(false);
+    updatePlotViewport();
 }
 
 function eventCallback(type, evt) {
@@ -248,10 +249,10 @@ function eventCallback(type, evt) {
         case "AxesDrawer::dblclick":
             if (zoomStack.length > 0) {
                 layout.zoomX = zoomStack.pop()
+                updatePlotViewport();
             } else {
                 freeZoom();
             }
-            updatePlotViewport();
             evt.preventDefault();
             break;
 
@@ -382,7 +383,7 @@ if (window.location.hash == '#example-data') {
     while (counter < 600 + 300 * 1000) {
         addSampleData(true);
     }
-    addSampleData(false);
+    // addSampleData(false);
 }
 
 firstNewData();
