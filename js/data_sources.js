@@ -142,7 +142,7 @@ function connectViaWebSocket() {
         }
     }
     ws.onerror = function (event) {
-        ws_internal.isClosed = true;
+        ws_internal.isOpen = false;
         if (ws_internal === ws) {
             ws = null;
         }

@@ -307,13 +307,15 @@ function freeze(newValue) {
     if (newValue !== undefined) {
         isFrozen = !newValue; // Negate as will be negated once more below.
     }
-    if (!isFrozen) {
+
+    isFrozen = !isFrozen;
+
+    if (isFrozen) {
         let axesDrawer = plots[0].axesDrawer
         layout.zoomX = [axesDrawer.xFrom, axesDrawer.xTo];
     } else {
         layout.zoomX = null;
     }
-    isFrozen = !isFrozen;
 }
 
 let drawCounter = 0;
