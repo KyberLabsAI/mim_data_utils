@@ -9,9 +9,16 @@ traces.callbackFn.push(event3DCallback)
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
 let addOptions = document.getElementById('addOptions');
-let layoutVersion = 0;
 
 layoutDom.value = localStorage.getItem('layout') || "trig[0],trig[1];trig[:2]";
+
+function arrEqual(a, b) {
+    if (a.length != b.length) {
+        return false;
+    } else {
+        return a.every((v, i) => v == b[i]);
+    }
+}
 
 // https://matplotlib.org/stable/gallery/color/named_colors.html
 colors = [
@@ -90,7 +97,6 @@ function updatePlotViewport() {
         plot.setViewport(xlim[0], ylim.from, xlim[1], ylim.to);
     });
 
-    layoutVersion += 1;
     return xlim;
 }
 
@@ -345,7 +351,11 @@ let draw = () => {
 
     let absTime = scene.absoluteTime();
 
-    plots.forEach(plot => plot.draw(absTime, xlim, layoutVersion, false));
+    let refreshPlot = !arrEqual(xlim, traces.view.xlim) || traces.view.newData;
+    plots.forEach(plot => plot.draw(absTime, xlim, refreshPlot, false));
+
+    traces.view.xlim = xlim;
+    traces.view.newData = false;
 
     if (isSceneDisplayed()) {
         scene.render();

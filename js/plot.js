@@ -27,7 +27,6 @@ class Plot {
         this.axesDrawer = new AxesDrawer(canvasAxes, canvasGrid, this.margin, eventCallback);
 
         this.lines = [];
-        this.lastDataVersion = -1;
     }
 
     updateCanvasStyle(width, height) {
@@ -116,7 +115,7 @@ class Plot {
         })
     }
 
-    draw(time, xlim, dataVersion, axesOnly) {
+    draw(time, xlim, refreshPlots, axesOnly) {
         this.axesDrawer.draw([new VerticalLine(time, 'orange')]);
 
         this.updateLegendValues(time);
@@ -126,7 +125,7 @@ class Plot {
         }
 
         let updated = 0;
-        if (this.lastDataVersion != dataVersion) {
+        if (refreshPlots) {
             if (this.lines.length == 0) {
                 this.lineDrawer.clear();
             } else {
@@ -139,9 +138,6 @@ class Plot {
                     }
                 });
             }
-
-            this.lastDataVersion = dataVersion;
-            // console.log(updated);
         }
     }
 }

@@ -335,6 +335,10 @@ class Traces {
         this.seriesData = new Map();
         this.lineData = new Map();
         this.staticData = new Map();
+        this.view = {
+            xlim: [-1, -1],
+            newData: true
+        }
 
         if (!supressEvent) {
             this.callback('Traces::clear')
@@ -401,6 +405,12 @@ class Traces {
             newSeries = true;
         }
         this.seriesData.get(name).record(this.time, value);
+
+        let viewXLim = this.view.xlim;
+        if (viewXLim[0] <= this.time && this.time <= viewXLim[1]) {
+            this.view.newData = true;
+        }
+
 
         for (let i = 0; i < value.length; i++) {
             let entryName = this._lineDataKey(name, i);
