@@ -19,6 +19,7 @@ class GLDrawer {
 
     setupGL() {
         let canvas = this.canvas;
+
         const vertexCode = document.getElementById("vertex").textContent;
         const fragmentCode = document.getElementById("fragment").textContent;
 

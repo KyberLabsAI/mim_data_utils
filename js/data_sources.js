@@ -101,14 +101,7 @@ let domMessage = document.getElementById('message');
 
 let ws = null;
 function connectViaWebSocket() {
-    let ws_internal;
-    try {
-        ws = ws_internal = new WebSocket("ws://127.0.0.1:5678/");
-    } catch (err) {
-        ws = null;
-        return;
-    }
-
+    ws = new WebSocket("ws://127.0.0.1:5678/");
 
     let firstData = true;
     ws.onmessage = function (event) {
@@ -134,36 +127,18 @@ function connectViaWebSocket() {
             firstNewData();
         }
     };
-    ws.onopen = function() {
-        if (ws !== ws_internal) {
-            ws_internal.close();
-        } else {
-            ws.isOpen = true;
-        }
-    }
+
     ws.onerror = function (event) {
-        ws_internal.isOpen = false;
-        if (ws_internal === ws) {
-            ws = null;
-        }
         domMessage.textContent = 'Error with streaming. Is the data streamed?'
     };
 }
 
-function checkConnection() {
-    if (ws && !ws.isOpen) {
-        ws.close();
-        ws = null;
+setInterval(() => {
+    if (!ws || ws.readyState >= 2) {
+        connectViaWebSocket(true);
     }
+}, 100);
 
-    if (!ws) {
-        connectViaWebSocket();
-    }
-
-}
-
-setInterval(checkConnection, 100);
-checkConnection();
 
 function readDatafile(binaryBuffer) {
     if (ws) {
