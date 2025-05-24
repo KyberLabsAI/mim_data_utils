@@ -59,7 +59,14 @@ function getXLim() {
 }
 
 document.getElementById('xlimDom').addEventListener('change', (evt) => {
-    layout.zoomX = null;
+    if (isFrozen) {
+        let xValue = parseFloat(document.getElementById('xlimDom').value);
+        let mid = 0.5 * (layout.zoomX[1] + layout.zoomX[0]);
+        layout.zoomX = [mid - xValue/2, mid + xValue/2];
+    } else {
+        layout.zoomX = null;
+    }
+
     updatePlotViewport();
 })
 
@@ -385,7 +392,7 @@ if (window.location.hash == '#example-data') {
     while (counter < 600 + 300 * 1000) {
         addSampleData(true);
     }
-    // addSampleData(false);
+    addSampleData(false);
 }
 
 firstNewData();
