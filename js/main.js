@@ -52,7 +52,7 @@ function getXLim() {
     } else {
         let xValue = parseFloat(document.getElementById('xlimDom').value);
         xlim[0] = Math.max(0, traces.getLastTime() - xValue);
-        xlim[1] = Math.max(0, traces.getLastTime());
+        xlim[1] = xlim[0] + xValue;
 
         if (xlim[0] == xlim[1]) {
             xlim[1] += 1.;
@@ -68,8 +68,9 @@ function getXLim() {
 document.getElementById('xlimDom').addEventListener('change', (evt) => {
     if (isFrozen) {
         let xValue = parseFloat(document.getElementById('xlimDom').value);
-        let mid = 0.5 * (layout.zoomX[1] + layout.zoomX[0]);
-        layout.zoomX = [mid - xValue/2, mid + xValue/2];
+        // Ensure the start point is positive.
+        let start = Math.max(0, 0.5 * (layout.zoomX[1] + layout.zoomX[0]) - xValue/2);
+        layout.zoomX = [start, start + xValue];
     } else {
         layout.zoomX = null;
     }
@@ -399,9 +400,9 @@ let addSampleData = (once) => {
 if (window.location.hash == '#example-data') {
     layoutDom.value = 'sin[:]'
 
-    while (counter < 600 + 300 * 1000) {
-        addSampleData(true);
-    }
+    // while (counter < 600 + 300 * 1000) {
+    //     addSampleData(true);
+    // }
     addSampleData(false);
 }
 
