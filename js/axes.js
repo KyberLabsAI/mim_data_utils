@@ -128,11 +128,11 @@ class AxesDrawer {
 
     drawTickX(val, pos, drawText) {
         let y = this.axisHeight + this.margin[0];
-        this.strokeLine(pos, y - 20, pos, y + 0);
+        this.strokeLine(pos, y - 26, pos, y + 0);
         this.strokeLine(pos, this.margin[0], pos, y, this.ctxGrid);
 
         if (drawText) {
-            this.ctx.fillText(val, pos + 3, y - 8);
+            this.ctx.fillText(val, pos + 3, y - 12);
         }
     }
 
@@ -204,7 +204,7 @@ class AxesDrawer {
             let text = line.label || `(${line.x.toFixed(3)})`;
             let textWidth = ctx.measureText(text).width;
 
-            let y = margin[0] + this.axisHeight - 8;
+            let y = margin[0] + this.axisHeight - 26;
 
             ctx.fillStyle = 'white';
             ctx.fillRect(pos + 5, y, textWidth, 18);

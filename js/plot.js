@@ -20,7 +20,7 @@ class Plot {
         dom.appendChild(canvasAxes);
         dom.append(legend);
 
-        this.margin = [10, 20, 10, 20];
+        this.margin = [-10, 20, -5, 20];
 
         this.glDrawer = new GLDrawer(canvasLine, this.margin);
         this.lineDrawer = new GLLineDrawer(this.glDrawer.ctx);
