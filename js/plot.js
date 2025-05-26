@@ -27,6 +27,7 @@ class Plot {
         this.axesDrawer = new AxesDrawer(canvasAxes, canvasGrid, this.margin, eventCallback);
 
         this.lines = [];
+        this.lastVLines = '';
     }
 
     updateCanvasStyle(width, height) {
@@ -83,16 +84,6 @@ class Plot {
             lineData: lineData,
             style: style
         });
-
-        this.legend.textContent = '';
-        this.lines.forEach(line => {
-            let style = line.style;
-            let legendDiv = document.createElement('div');
-            legendDiv.textContent = line.label;
-            let borderColor = `rgb(${style.r * 256}, ${style.g * 256}, ${style.b * 256})`;
-            legendDiv.style = `border-color: ${borderColor}`
-            this.legend.appendChild(legendDiv);
-        });
     }
 
     setViewport(xl, yl, xh, yh) {
@@ -100,25 +91,56 @@ class Plot {
         this.lineDrawer.setViewport(xl, yl, xh, yh);
     }
 
-    updateLegendValues(time) {
-        let entries = Array.from(this.legend.childNodes);
+    updateLegendValues(vLines) {
+        // Only redraw when vLines has changed.
+        let json = JSON.stringify(vLines);
+        if (json == this.lastVLines && this.legend.innerHTML !== '') {
+            return;
+        }
+        this.lastVLines = json;
+
+
+        let out = '<table><tr><th></th>'
+        vLines.forEach(line => {
+            out += `<th>${line.label || ''}</th>`;
+        })
+
+        out += '</tr><tr><td>Time:</td>';
+
+        vLines.forEach(vLine => {
+            out += `<td>${vLine.x.toFixed(3)}</td>`
+        });
+
+        out += '</tr>'
 
         this.lines.forEach((line, i) => {
-            let data = traces.dataAtTime(line.dataName, time);
-            let label = line.label;
+            let borderColor = `rgb(${line.style.r * 256}, ${line.style.g * 256}, ${line.style.b * 256})`
+            out += `<tr><td class="label" style="border-color:${borderColor}">${line.label}</td>`;
+            vLines.forEach(vLine => {
+                let data = traces.dataAtTime(line.dataName, vLine.x);
 
-            // In case the user clicked outside of available data.
-            if (data) {
-                label += ': ' + data[line.dataIdx].toFixed(3);
-            }
-            entries[i].textContent = label;
+                // In case the user clicked outside of available data.
+                let label = !data ? '' : data[line.dataIdx].toFixed(3);
+
+                out += `<td>${label}</td>`
+            })
+
+            out += '</tr>';
         })
+        out += '</table>';
+
+        this.legend.innerHTML = out;
     }
 
-    draw(time, xlim, refreshPlots, axesOnly) {
-        this.axesDrawer.draw([new VerticalLine(time, 'orange')]);
+    draw(time, xlim, refreshPlots, axesOnly, marks) {
+        let verticalLines = [new VerticalLine(time, 'orange')];
+        marks.withinXLim(xlim).forEach(mark => {
+            verticalLines.push(new VerticalLine(mark.t, 'red', mark.label));
+        });
 
-        this.updateLegendValues(time);
+        this.axesDrawer.draw(verticalLines);
+
+        this.updateLegendValues(verticalLines);
 
         if (axesOnly) {
             return

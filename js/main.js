@@ -6,6 +6,7 @@ let hasData = false;
 let traces = new Traces(wsMaxData, eventCallback);
 traces.callbackFn.push(event3DCallback)
 
+let marks = new Marks();
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
 let addOptions = document.getElementById('addOptions');
@@ -240,9 +241,15 @@ function eventCallback(type, evt) {
             break;
 
         case "AxesDrawer::mousedown":
-            freeze(true);
             mouseDownX = evt.offsetX;
             mouseDownPos = plots[0].axesDrawer.clientXToTick(evt.offsetX);
+
+            if (evt.altKey) {
+                marks.addMark(mouseDownPos);
+            } else {
+                freeze(true);
+            }
+
             evt.preventDefault();
             break;
 
@@ -353,7 +360,7 @@ let draw = () => {
     let absTime = scene.absoluteTime();
 
     let refreshPlot = !arrEqual(xlim, traces.view.xlim) || traces.view.newData;
-    plots.forEach(plot => plot.draw(absTime, xlim, refreshPlot, false));
+    plots.forEach(plot => plot.draw(absTime, xlim, refreshPlot, false, marks));
 
     traces.view.xlim = xlim;
     traces.view.newData = false;
@@ -400,10 +407,10 @@ let addSampleData = (once) => {
 if (window.location.hash == '#example-data') {
     layoutDom.value = 'sin[:]'
 
-    // while (counter < 600 + 300 * 1000) {
-    //     addSampleData(true);
-    // }
-    addSampleData(false);
+    while (counter < 600 + 300 * 1000) {
+        addSampleData(true);
+    }
+    // addSampleData(false);
 }
 
 firstNewData();
@@ -440,6 +447,14 @@ addOptions.addEventListener('change', evt => {
     layoutDom.selectionEnd = val.length - 1;
     updateLayout();
 })
+
+function removeMark() {
+    let label = prompt("Which mark do you want to remove?");
+    if (!label) {
+        return;
+    }
+    label.replaceAll(' ', '').split(',').forEach(l => marks.removeMarkByLabel(l));
+}
 
 if (window.location.hash == '#dummy') {
     traces.clear(false, Number.POSITIVE_INFINITY);

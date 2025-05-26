@@ -80,9 +80,10 @@ class TickDrawer {
 }
 
 class VerticalLine {
-    constructor(x, style) {
+    constructor(x, style, label) {
         this.x = x;
         this.style = style;
+        this.label = label;
     }
 }
 
@@ -127,7 +128,7 @@ class AxesDrawer {
 
     drawTickX(val, pos, drawText) {
         let y = this.axisHeight + this.margin[0];
-        this.strokeLine(pos, y - 10, pos, y + 10);
+        this.strokeLine(pos, y - 20, pos, y + 0);
         this.strokeLine(pos, this.margin[0], pos, y, this.ctxGrid);
 
         if (drawText) {
@@ -192,7 +193,7 @@ class AxesDrawer {
         this.strokeLine(this.mouseX, margin[0] + this.axisHeight, this.mouseX, margin[0]);
         this.strokeLine(margin[3], this.mouseY, margin[0] + this.axisWidth, this.mouseY);
 
-        // Draw user vertica; lines.
+        // Draw user vertical lines.
         for (let line of verticalLines) {
             let pos = this.tickDrawerX.tickToPos(line.x);
             ctx.save();
@@ -200,16 +201,16 @@ class AxesDrawer {
             ctx.fillStyle = line.style;
             this.strokeLine(pos, margin[0] + this.axisHeight, pos, margin[0]);
 
-            let text = `(${line.x.toFixed(3)})`;
+            let text = line.label || `(${line.x.toFixed(3)})`;
             let textWidth = ctx.measureText(text).width;
 
             let y = margin[0] + this.axisHeight - 8;
 
             ctx.fillStyle = 'white';
-            ctx.fillRect(pos + 5, y - 12, textWidth, 18);
+            ctx.fillRect(pos + 5, y, textWidth, 18);
 
             ctx.fillStyle = line.style;
-            ctx.fillText(text, pos + 5, y);
+            ctx.fillText(text, pos + 5, y + 14);
             ctx.restore();
         }
 

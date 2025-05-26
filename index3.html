@@ -71,11 +71,13 @@
 .legend {
   position: absolute;
   left: 80px;
-  text-align: left;
-  background: white;
+  text-align: right;
+  background: rgba(255, 255, 255, 0.5);
+  font-family: monospace;
 }
 
-.legend > div {
+.legend td.label {
+  text-align: left;
   border-width: 0;
   border-style: solid;
   border-right-width: 3px;
@@ -101,8 +103,10 @@
         <button onclick="onRefreshDerivedClick()">Refresh Derived</button> -->
         <button onclick="freeze()">Freeze</button>
         <button onclick="toggleScene()">Toggle Scene</button>
+        <button onclick="removeMark()">Remove Mark</button>
         <button onclick="stepBack()">t--</button>
         <button onclick="stepForward()">t++</button>
+
         <br>
         <div style="display: flex;">
             <span>Layout:</span>
@@ -192,6 +196,7 @@
   <script src="js/traces.js"></script>
   <script src="js/data_sources.js"></script>
   <script src="js/scene3d.js"></script>
+  <script src="js/marker.js"></script>
 
   <script src="js/main.js"></script>
 </body>
