@@ -410,7 +410,7 @@ if (window.location.hash == '#example-data') {
     while (counter < 600 + 300 * 1000) {
         addSampleData(true);
     }
-    // addSampleData(false);
+    addSampleData(false);
 }
 
 firstNewData();
@@ -456,26 +456,7 @@ function removeMark() {
     label.replaceAll(' ', '').split(',').forEach(l => marks.removeMarkByLabel(l));
 }
 
-if (window.location.hash == '#dummy') {
-    traces.clear(false, Number.POSITIVE_INFINITY);
-    wsMaxData = 1000 * 1000;
 
-    for (let ti = 0; ti < 1000 * 1000; ti++) {
-        traces.beginTimestep(0.001 * ti);
-        traces.record('sin', [Math.sin(0.001 * ti)])
-        traces.endTimestep();
-    }
-} else {
-    connectViaWebSocket();
-
-    // setTimeout(() => {
-    //     JSON.parse((localStorage.getItem('lastData') || '[]')).forEach(entries => {
-    //         JSON.parse(entries).forEach(parsewebSocketData);
-    //     });
-    //     firstNewData();
-
-    // }, 10)
-}
-
+connectViaWebSocket();
 updateSignals();
 updateLayout();

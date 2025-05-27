@@ -135,7 +135,7 @@ class Plot {
     draw(time, xlim, refreshPlots, axesOnly, marks) {
         let verticalLines = [new VerticalLine(time, 'orange')];
         marks.withinXLim(xlim).forEach(mark => {
-            verticalLines.push(new VerticalLine(mark.t, 'red', mark.label));
+            verticalLines.push(new VerticalLine(mark.time, 'red', mark.label));
         });
 
         this.axesDrawer.draw(verticalLines);
