@@ -88,11 +88,12 @@ class VerticalLine {
 }
 
 class AxesDrawer {
-    constructor(canvas, canvasGrid, margin, eventCallback) {
+    constructor(canvas, canvasGrid, margin, devicePixelRatio, eventCallback) {
         this.canvas = canvas;
         this.ctx = canvas.getContext("2d");
         this.canvasGrid = canvasGrid;
         this.ctxGrid = canvasGrid.getContext("2d");
+        this.devicePixelRatio = devicePixelRatio;
 
         this.margin = margin;
 
@@ -164,7 +165,7 @@ class AxesDrawer {
 
             ctx.save();
             ctx.translate(0.5, 0.5);
-            ctx.scale(4, 4);
+            ctx.scale(this.devicePixelRatio, this.devicePixelRatio);
         }
 
         setupCanvas(canvas, ctx);

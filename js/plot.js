@@ -6,6 +6,8 @@ class Plot {
         let dom = this.dom = document.createElement('div');
         domParent.appendChild(dom);
 
+        this.devicePixelRatio = window.devicePixelRatio;
+
         let canvasGrid = this.canvasGrid = document.createElement('canvas');
         let canvasLine = this.canvasLine = document.createElement('canvas');
         let canvasAxes = this.canvasAxes = document.createElement('canvas');
@@ -24,7 +26,7 @@ class Plot {
 
         this.glDrawer = new GLDrawer(canvasLine, this.margin);
         this.lineDrawer = new GLLineDrawer(this.glDrawer.ctx);
-        this.axesDrawer = new AxesDrawer(canvasAxes, canvasGrid, this.margin, eventCallback);
+        this.axesDrawer = new AxesDrawer(canvasAxes, canvasGrid, this.margin, this.devicePixelRatio, eventCallback);
 
         this.lines = [];
         this.lastVLines = '';
@@ -42,9 +44,10 @@ class Plot {
             canvas.setAttribute('style', style);
         }
 
-        setStyle(this.canvasGrid, 4 * width, 4 * height);
+        let ratio = this.devicePixelRatio;
+        setStyle(this.canvasGrid, ratio * width, ratio * height);
         setStyle(this.canvasLine, width, height);
-        setStyle(this.canvasAxes, 4 * width, 4 * height);
+        setStyle(this.canvasAxes, ratio * width, ratio * height);
 
         dom.style.position = 'relative';
         dom.style.width = `${width}px`;
