@@ -11,6 +11,8 @@ let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
 let addOptions = document.getElementById('addOptions');
 
+let forcePlotRefresh = true;
+
 layoutDom.value = localStorage.getItem('layout') || "trig[0],trig[1];trig[:2]";
 
 function arrEqual(a, b) {
@@ -194,6 +196,7 @@ function updateLayout() {
     });
 
     updatePlotViewport();
+    forcePlotRefresh = true;
 }
 
 layoutDom.addEventListener('keydown', (evt) => {
@@ -321,6 +324,7 @@ function toggleScene(state) {
 
     scene.resize();
     shouldResize = true;
+    forcePlotRefresh = true;
 }
 
 var isFrozen = false;
@@ -353,13 +357,15 @@ let draw = () => {
         shouldResize = false;
         let width = domPlots.clientWidth;
         plots.forEach(p => p.updateSize(width, 300));
+        forcePlotRefresh = true;
     }
 
     let xlim = updatePlotViewport();
 
     let absTime = scene.absoluteTime();
 
-    let refreshPlot = !arrEqual(xlim, traces.view.xlim) || traces.view.newData;
+    let refreshPlot = forcePlotRefresh || !arrEqual(xlim, traces.view.xlim) || traces.view.newData;
+    forcePlotRefresh = false;
     plots.forEach(plot => plot.draw(absTime, xlim, refreshPlot, false, marks));
 
     traces.view.xlim = xlim;
@@ -449,7 +455,7 @@ addOptions.addEventListener('change', evt => {
 })
 
 function removeMark() {
-    let label = prompt("Which mark do you want to remove?");
+    let label = prompt("Which mark do you want to remove?").toUpperCase();
     if (!label) {
         return;
     }
