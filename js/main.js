@@ -73,7 +73,7 @@ document.getElementById('xlimDom').addEventListener('change', (evt) => {
         let xValue = parseFloat(document.getElementById('xlimDom').value);
         // Ensure the start point is positive.
         let start = Math.max(0, 0.5 * (layout.zoomX[1] + layout.zoomX[0]) - xValue/2);
-        layout.zoomX = [start, start + xValue];
+        layout.zoomX = [layout.zoomX[0], layout.zoomX[0] + xValue];
     } else {
         layout.zoomX = null;
     }
@@ -416,7 +416,7 @@ if (window.location.hash == '#example-data') {
     while (counter < 600 + 300 * 1000) {
         addSampleData(true);
     }
-    addSampleData(false);
+    // addSampleData(false);
 }
 
 firstNewData();
