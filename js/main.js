@@ -214,8 +214,13 @@ layoutDom.addEventListener('keydown', (evt) => {
 
 // traces.setDerivedFn(derivedFn);
 
-let mouseDownPos = null;
-let mouseDownX = null;
+let mouseDown = {
+    active: false,
+    pos: null,
+    x: null,
+    shift: false,
+    xlim: null
+}
 
 let ignoreMouseClick = false;
 
@@ -231,6 +236,16 @@ function freeZoom() {
 function eventCallback(type, evt) {
     switch(type) {
         case "AxesDrawer::mousemove":
+            if (mouseDown.active && mouseDown.shift) {
+                let move = -(evt.offsetX - mouseDown.x) / plots[0].axesDrawer.clientXScale();
+                let mouseDownXLim = mouseDown.xlim;
+                let xLimStart = mouseDownXLim[0] + move;
+
+                layout.zoomX = [
+                    xLimStart, xLimStart + (mouseDownXLim[1] - mouseDownXLim[0])
+                ];
+            }
+
             plots.forEach(plot => {
                 let axesDrawer = plot.axesDrawer;
                 axesDrawer.mouseX = evt.offsetX;
@@ -244,11 +259,14 @@ function eventCallback(type, evt) {
             break;
 
         case "AxesDrawer::mousedown":
-            mouseDownX = evt.offsetX;
-            mouseDownPos = plots[0].axesDrawer.clientXToTick(evt.offsetX);
+            mouseDown.active = true;
+            mouseDown.x = evt.offsetX;
+            mouseDown.pos = plots[0].axesDrawer.clientXToTick(evt.offsetX);
+            mouseDown.shift = evt.shiftKey;
+            mouseDown.xlim = getXLim();
 
             if (evt.altKey) {
-                marks.addMark(mouseDownPos);
+                marks.addMark(mouseDown.pos);
             } else {
                 freeze(true);
             }
@@ -257,17 +275,25 @@ function eventCallback(type, evt) {
             break;
 
         case "AxesDrawer::mouseup":
+            mouseDown.active = false;
+
+            if (mouseDown.shift) {
+                break;
+            }
+
             let mouseUpPos = plots[0].axesDrawer.clientXToTick(evt.offsetX);
-            if (Math.abs(mouseDownX - evt.offsetX) > 2) {
+            if (Math.abs(mouseDown.x - evt.offsetX) > 2) {
                 zoomStack.push(getXLim())
-                layout.zoomX = mouseDownPos < mouseUpPos ? [mouseDownPos, mouseUpPos] : [mouseUpPos, mouseDownPos];
+                layout.zoomX = mouseDown.pos < mouseUpPos ? [mouseDown.pos, mouseUpPos] : [mouseUpPos, mouseDown.pos];
                 updatePlotViewport();
                 freeze(true);
                 evt.preventDefault();
                 ignoreMouseClick = true;
             } else {
-                scene.setTime(mouseDownPos);
+                scene.setTime(mouseDown.pos);
             }
+           
+
             break;
 
         case "AxesDrawer::dblclick":
