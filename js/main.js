@@ -416,7 +416,7 @@ if (window.location.hash == '#example-data') {
     while (counter < 600 + 300 * 1000) {
         addSampleData(true);
     }
-    // addSampleData(false);
+    addSampleData(false);
 }
 
 firstNewData();
