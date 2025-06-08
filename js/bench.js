@@ -29,29 +29,45 @@ async function runComputeShaderExample() {
 
     let fx = x => 125 * Math.sin(2 * Math.PI * x / 100) + 150
 
+
+    for (let i = 0; i < width; i++) {
+        data[2 * i] = height;
+    }
+
     for (let i = 0; i < width; i++) {
         let yFrom = fx(i);
         let yTo = fx(i + 1);
-        let yDiff = Math.abs(yFrom - yTo);
+        let yDiff = yFrom - yTo;
 
-        let alpha = Math.atan(yDiff);
+        let lineWidth = 6;
+        let hlw = lineWidth / 2;
 
-        let lineWidth = 3;
-        let beta = Math.PI / 2 - alpha;
-        let height = yDiff + Math.abs(Math.sin(beta) * lineWidth);
+        let dy = yDiff;
+        let dx = 1.;
 
-        data[2 * i] = yFrom - height;
-        data[2 * i + 1] = yFrom + height;
+        let vy = dx;
+        let vx = -dy;
 
-        let dx = Math.ceil(Math.cos(beta)) * lineWidth;
-        for (let offset = - dx; offset <= dx; offset++) {
+        let len = Math.sqrt(dx * dx + dy * dy);
+        let ny = vy / len;
+        let nx = vx / len;
+
+        let startX = i + nx * hlw;
+        let startY = yFrom + ny * hlw;
+
+        let xIter = Math.ceil(startX);
+        let yIter = startY + (i - startX) * yDiff;
+        let height = Math.abs(yIter - yFrom);
+
+        dx = Math.abs(i - xIter);
+
+        for (let offset = -dx; offset <= -dx + 1; offset++) {
             let j = i + offset;
-            let dy = Math.tan(beta) * offset;
-
-            data[2 * j] = Math.min(data[2 * j], yFrom + dy);
-
-
+            let y = fx(j);
+            data[2 * j] = Math.min(data[2 * j], y - height);
+            data[2 * j + 1] = Math.max(y, data[2 * j + 1]);
         }
+        // data[2 * ]
 
         ctx2.lineWidth = 6;
         ctx2.beginPath();
@@ -132,7 +148,7 @@ async function runComputeShaderExample() {
             let a = 255u;
 
 
-            //outputPixel[idx - width] = ((r << 24) | (g << 16) | (b << 8) | a);
+            outputPixel[idx - width] = ((r << 24) | (g << 16) | (b << 8) | a);
 
             for (var y: u32 = yFrom; y <= yTo; y++) {
                 outputPixel[idx] = ((255 << 24) | 255);
