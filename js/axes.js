@@ -63,7 +63,7 @@ class TickDrawer {
 
     clientToTick(clientPos) {
         clientPos -= this.drawOffset
-        let scale = this.drawSize / (this.to - this.from);
+        let scale = this.getScale();
 
         if (this.xAxis) {
             clientPos += this.from * scale;
@@ -72,6 +72,10 @@ class TickDrawer {
             clientPos -= this.to * scale;
             return -clientPos / scale;
         }
+    }
+
+    getScale() {
+        return this.drawSize / (this.to - this.from);
     }
 
     clientToTickText(clientPos) {
@@ -224,6 +228,10 @@ class AxesDrawer {
 
     clientXToTick(x) {
         return this.tickDrawerX.clientToTick(x);
+    }
+
+    clientXScale() {
+        return this.tickDrawerX.getScale();
     }
 
     setViewportDraw(x0, y0, x1, y1) {
