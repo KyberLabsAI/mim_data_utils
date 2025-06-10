@@ -35,6 +35,12 @@
         let cameraPos, cameraEuler, cameraQuat;
         let firstXRFrame = true;
 
+        let eul = new THREE.Euler(0, Math.PI/2., Math.PI/2 - 0.2, 'ZXY')
+        let quat = new THREE.Quaternion()
+        quat.setFromEuler(eul);
+        console.log(eul, quat, quat.x, quat.y, quat.z, quat.w);
+
+
         function init() {
             renderer = new THREE.WebGLRenderer();
             renderer.setPixelRatio( window.devicePixelRatio );
@@ -54,15 +60,17 @@
             // camera.rotation.set(Math.PI/2, 0, -Math.PI/2, 'ZXY');
             // camera.rotation.set(Math.PI/2, 0.2, -Math.PI/2, 'ZXY');
 
-            camera.rotation.set(Math.PI/2, 0., -Math.PI/2 + 0.2, 'ZXY');
+            // camera.rotation.set(Math.PI/2, 0., -Math.PI/2 + 0.2, 'ZXY');
+            camera.rotation.set(Math.PI/2, 0, -Math.PI/2 + 0.2, 'ZXY');
+            // camera.rotation.set(Math.PI/2 - 0.2, -Math.PI/2, 0, 'ZXY');
 
             cameraPos = camera.position.clone();
             cameraQuat = camera.quaternion.clone();
-            console.log(cameraQuat);
+            // console.log(cameraQuat);
 
             cameraEuler = new THREE.Euler();
             cameraEuler.setFromQuaternion(cameraQuat);
-            console.log(cameraEuler);
+            // console.log(cameraEuler);
 
             cameraEuler.reorder('ZXY');
 
@@ -102,28 +110,25 @@
             // Event listener for window resizing
             window.addEventListener('resize', onWindowResize);
 
+            function quatFromAxisAngle(x, y, z, angle) {
+                let quat = new THREE.Quaternion();
+                quat.setFromAxisAngle(new THREE.Vector3(x, y, z), angle);
+                return quat;
+            }
+
+            // console.log(quatFromAxisAngle(1, 0, 0, Math.PI));
+
+            let Rx = quatFromAxisAngle(1, 0, 0, Math.PI);
+            let Rz = quatFromAxisAngle(0, 0, 1, Math.PI);
+
+            let vrQuat = Rx.multiply(Rz.multiply(cameraQuat));
+            // console.log(vrQuat);
+
             renderer.xr.addEventListener('sessionstart', () => {
-                // this.cameraGroup.position.copy([1, 0, 2]);
-                // this.cameraGroup.lookAt([0, 0, 0]);
-                // this.cameraGroup.rotateOnAxis(new THREE.Vector3(0, 1, 0), THREE.MathUtils.DEG2RAD * 180);
-
-                // const xrPosition = new DOMPointReadOnly(
-                //     camera.position.x, camera.position.y, camera.position.z);
-
-                // const xrPosition = new DOMPointReadOnly(0.5, 0, -1.0);
                 const xrPosition = new DOMPointReadOnly(0., 0, 0.);
-
-                let vrHeadsetQuaternion = new THREE.Quaternion();
-                vrHeadsetQuaternion.setFromAxisAngle( new THREE.Vector3( 0, 1, 0 ), Math.PI / 2 );
-
-                // Combine quaternions (order matters: VR headset * PC camera)
-                let quat = vrHeadsetQuaternion.clone().multiply(cameraQuat);
-                // // quat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI/2);
-
-                // // let quat = cameraQuat;
-
                 const xrOrientation = new DOMPointReadOnly(
-                    quat.x, quat.y, quat.z, quat.w);
+                    -cameraQuat.x, -cameraQuat.y, -cameraQuat.z, cameraQuat.w);
+
 
                 const offsetTransform = new XRRigidTransform(xrPosition, xrOrientation);
 
@@ -146,29 +151,6 @@
         }
 
         function animate(time, frame) {
-            if (frame && firstXRFrame) {
-                const xrCamera = renderer.xr.getCamera();
-                console.log(xrCamera.quaternion);
-
-                firstXRFrame = false;
-
-                // Apply PC camera quaternion to WebXR camera
-                // xrCamera.quaternion.copy(cameraQuat);
-            }
-
-            // if (frame && firstXRFrame) {
-            //     firstXRFrame = false;
-
-            //     const referenceSpace = renderer.xr.getReferenceSpace();
-            //     const pose = frame.getViewerPose(referenceSpace);
-
-            //     const xrCamera = renderer.xr.getCamera();
-
-            //     // Option 1: Override XR camera pose with PC camera pose
-            //     xrCamera.position.copy(cameraPos);
-            //     xrCamera.quaternion.copy(cameraQuat);
-            // }
-
             renderer.render( scene, camera );
 
         }
