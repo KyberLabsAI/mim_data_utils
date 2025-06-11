@@ -15,6 +15,11 @@ let forcePlotRefresh = true;
 
 layoutDom.value = localStorage.getItem('layout') || "trig[0],trig[1];trig[:2]";
 
+let scene = new Scene3D(document.getElementById('viewer'));
+let plane = new Plane3D('plane')
+scene.addObject(plane)
+
+
 function arrEqual(a, b) {
     if (a.length != b.length) {
         return false;
@@ -292,7 +297,7 @@ function eventCallback(type, evt) {
             } else {
                 scene.setTime(mouseDown.pos);
             }
-           
+
 
             break;
 
@@ -320,10 +325,15 @@ function eventCallback(type, evt) {
     }
 }
 
+const VIEW_STATE_SCENE_ONLY = 2;
 var viewSceneState = 0;
 
 function isSceneDisplayed() {
     return viewSceneState % 3 > 0;
+}
+
+function isPlotDisplayed() {
+    return viewSceneState % 3 < 2;
 }
 
 function toggleScene(state) {
@@ -341,13 +351,14 @@ function toggleScene(state) {
 
     if (viewSceneState % 3 == 1) {
         showBoth = true;
-    } else if (viewSceneState % 3 == 2) {
+    } else if (viewSceneState % 3 == VIEW_STATE_SCENE_ONLY) {
         showSceneOnly = true
     }
 
     document.body.classList.toggle('showBoth', showBoth);
     document.body.classList.toggle('showSceneOnly', showSceneOnly);
 
+    forcePlotRefresh = true;
     scene.resize();
     shouldResize = true;
     forcePlotRefresh = true;
@@ -386,19 +397,17 @@ let draw = () => {
         forcePlotRefresh = true;
     }
 
-    let xlim = updatePlotViewport();
+    if (isPlotDisplayed()) {
+        let xlim = updatePlotViewport();
 
-    let absTime = scene.absoluteTime();
+        let absTime = scene.absoluteTime();
 
-    let refreshPlot = forcePlotRefresh || !arrEqual(xlim, traces.view.xlim) || traces.view.newData;
-    forcePlotRefresh = false;
-    plots.forEach(plot => plot.draw(absTime, xlim, refreshPlot, false, marks));
+        let refreshPlot = forcePlotRefresh || !arrEqual(xlim, traces.view.xlim) || traces.view.newData;
+        forcePlotRefresh = false;
+        plots.forEach(plot => plot.draw(absTime, xlim, refreshPlot, false, marks));
 
-    traces.view.xlim = xlim;
-    traces.view.newData = false;
-
-    if (isSceneDisplayed()) {
-        scene.render();
+        traces.view.xlim = xlim;
+        traces.view.newData = false;
     }
 }
 
