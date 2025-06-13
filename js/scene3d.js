@@ -372,12 +372,21 @@ class Scene3D {
             this.lastPoseUpdateTime = time;
 
             for (const [name, entry] of this.objects.entries()) {
+                let obj = entry.getObject();
+
                 let path = `${name}/pos`;
                 let data = traces.dataAtTime(path, time);
                 if (data) {
-                    let obj = entry.getObject();
                     obj.position.set(...data.slice(0, 3));
                     obj.quaternion.set(...data.slice(3))
+                }
+
+                path = `${name}/color`;
+                data = traces.dataAtTime(path, time);
+                if (data) {
+                    let material = obj.mesh.material
+                    parseMaterialColor(data, material);
+                    material.needsUpdate = true;
                 }
             }
         }
@@ -447,6 +456,19 @@ function stepForward() {
     scene.time += 0.05;
 }
 
+function parseMaterialColor(color, material) {
+    if (typeof color == 'string') {
+        color = parseInt(color, 16);
+    } else if (color.length == 3) {
+        color = colorArrayToNumber(color);
+    } else if (color.length == 4) {
+        material.transparent = true;
+        material.opacity = color[3];
+        color = colorArrayToNumber(color.slice(0, 3));
+    }
+    material.color = color;
+}
+
 function addUpdateObject(data) {
     if (!(data.vertices instanceof Float32Array)) {
         data.vertices = new Float32Array(data.vertices)
@@ -456,22 +478,7 @@ function addUpdateObject(data) {
         data.material = {};
     }
 
-    if (data.material.color) {
-        let color = data.material.color;
-        if (typeof color == 'string') {
-            color = parseInt(color, 16);
-        } else if (color.length == 3) {
-            color = colorArrayToNumber(color);
-        } else if (color.length == 4) {
-            data.material.transparent = true;
-            data.material.opacity = color[3];
-            color = colorArrayToNumber(color.slice(0, 3));
-        }
-        data.material.color = color;
-    } else {
-        data.material.color = parseInt('dddddd', 16); // Gray.
-    }
-
+    parseMaterialColor(data.material.color || 'dddddd', data.material)
     scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
 
 
