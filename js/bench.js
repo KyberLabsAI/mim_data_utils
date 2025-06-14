@@ -83,7 +83,7 @@ async function runComputeShaderExample() {
         @group(0) @binding(0) var<storage, read> inputData: array<f32>;
         @group(0) @binding(1) var<storage, read_write> outputPixel: array<u32>; // Using a single f32 for atomic ops
 
-        @compute @workgroup_size(64) // Process 64 elements per workgroup
+        @compute @workgroup_size(32) // Process 64 elements per workgroup
         fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let width = 800u;
             let height = 300u;
@@ -91,78 +91,39 @@ async function runComputeShaderExample() {
             let squareRadius = radius * radius;
             let antiAliasingRange = 0.7;
 
-            // let x = global_id.x; // We only care about the x-dimension for a 1D array
-            let x = u32(global_id.x / height);
-            let y = u32(global_id.x % height);
-
-            let fx = f32(x);
-
-
-            let lines = 1u; //u32(arrayLength(&inputData) / 4);
+            let x = global_id.x / 2; // We only care about the x-dimension for a 1D array
 
             if (x >= width) {
                 return;
             }
 
-            // for (var y: u32 = 0; y < height; y++) {
-            {
+            for (var y: u32 = 0; y < height / 2; y++) {
+                let P = vec2f(f32(x), f32(y));
 
-                let px = f32(x) + 0.5;
-                let py = f32(y) + 0.5;
+                let A = vec2f(2., 3.);
+                let B = vec2f(5., 6.);
+                let v = B - A;
+                let v2 = dot(v, v);
+                var rgba = vec4u(0, 0, 0, 0);
 
-                for (var lineIdx = 0u; lineIdx < lines; lineIdx++) {
-                    let x0 = inputData[4 * lineIdx];
-                    let y0 = inputData[4 * lineIdx + 1];
-                    let x1 = inputData[4 * lineIdx + 2];
-                    let y1 = inputData[4 * lineIdx + 3];
+                for (var i: u32 = 0; i < 350; i++) {
+                    let dxy = vec2f(f32(i), f32(y));
 
-                    if (x0 < fx - radius || x1 > fx + radius) {
-                        continue;
+                    let t = 2 + dot(dxy, v) / v2;
+
+                    let t_out = f32(t >= 0 && t <= 1);
+
+                    let P_closest = A + t * v;
+                    let dist = length(P - P_closest);
+
+                    let d_out = f32(dist <= 800.);
+
+                    if (t_out * d_out == 1) {
+                        rgba.w = 255;
                     }
-
-                    let L2 = (x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0);
-
-                    // Calculate 't', the projection of the point (px, py) onto the infinite line
-                    // defined by (x0, y0) and (x1, y1).
-                    // 't' represents how far along the line segment (0 to 1) the closest point lies.
-                    let t = ((px - x0) * (x1 - x0) + (py - y0) * (y1 - y0)) / L2;
-
-                    // Clamp 't' between 0 and 1. This ensures we find the closest point
-                    // on the *segment*, not the infinite line, providing rounded caps.
-                    let clampedT = max(0, min(1, t));
-
-                    // Calculate the closest point (closestX, closestY) on the line segment
-                    let closestX = x0 + clampedT * (x1 - x0);
-                    let closestY = y0 + clampedT * (y1 - y0);
-
-
-                    let distSq = (px - closestX) * (px - closestX) + (py - closestY) * (py - closestY);
-
-                    // Calculate coverage for anti-aliasing
-                    var alpha = 0.;
-                    if (distSq <= squareRadius) {
-                        alpha = 1.0; // Fully inside the line
-                    } else {
-                        let dist = sqrt(distSq);
-                        if (dist <= radius + antiAliasingRange) {
-                            // Linear falloff in the anti-aliasing range
-                            alpha = 1.0 - (dist - radius) / antiAliasingRange;
-                        }
-                    }
-
-                    if (alpha > 0) {
-                        let initRatio = (1 - alpha);
-                        let r = u32(initRatio * 255 + alpha * 255);
-                        let g = u32(initRatio * 255 + alpha * 0);
-                        let b = u32(initRatio * 255 + alpha * 0);
-                        let a = 255u;
-
-                        var idx = (x + y * width);
-                        outputPixel[idx] = ((r << 24) | (g << 16) | (b << 8) | a);
-                    }
-
                 }
 
+                outputPixel[x + width * y] = ((rgba.x << 24) | (rgba.y << 16) | (rgba.z << 8) | rgba.w);
             }
         }
     `;
@@ -229,7 +190,7 @@ async function runComputeShaderExample() {
     // If numElements is 16, and workgroup_size is 64, we need 1 workgroup.
     // (16 + 64 - 1) / 64 = 1
     const workgroupCount = WORK_GROUPS;
-    passEncoder.dispatchWorkgroups(Math.ceil(height * width / 64));
+    passEncoder.dispatchWorkgroups(2 * Math.ceil(width / 32));
     passEncoder.end();
 
     // Copy the result from the GPU-only outputBuffer to the CPU-readable stagingBuffer
