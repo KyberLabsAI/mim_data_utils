@@ -25,28 +25,41 @@ async function runComputeShaderExample() {
 
     // 1. Define the input data
     let WORK_GROUPS = 32;
-    let points = 800;
+    let points = 2 * 800;
     const data = new Float32Array(4 * points); // Using more data for better demonstration
 
     let fx = x => 125 * Math.sin(2 * Math.PI * x / 100) + 150
 
-    for (let i = 0; i < width; i++) {
-        data[4 * i] = i;
-        data[4 * i + 1] = fx(i);
-        data[4 * i + 2] = i + 1;
-        data[4 * i + 3] = fx(i + 1);
-    }
-
-    // data[0] = 10
-    // data[1] = 10
-    // data[2] = 60
-    // data[3] = 70
-
-
     ctx2.lineWidth = 6;
     ctx2.beginPath();
-    ctx2.moveTo(data[0], data[1]);
-    ctx2.lineTo(data[2], data[3]);
+
+    ctx2.moveTo(0, fx(0));
+
+    let dx = width / points;
+    let x = 0;
+
+    for (let i = 0; i < points; i++) {
+        data[4 * i] = x;
+        data[4 * i + 1] = fx(x);
+
+        x += dx
+        data[4 * i + 2] = x;
+        data[4 * i + 3] = fx(x);
+
+        let height = Math.abs(data[4 * i + 3] - data[4 * i + 1]);
+        let center = Math.min(data[4 * i + 3], data[4 * i + 1]) + height / 2;
+        height = Math.max(ctx2.lineWidth, height)
+
+        console.log(height);
+
+        ctx2.moveTo(data[4 * i + 2], center - height / 2);
+        ctx2.lineTo(data[4 * i + 2], center + height / 2);
+
+        // ctx2.lineTo(data[4 * i + 2], data[4 * i + 3]);
+
+
+    }
+
     ctx2.stroke()
 
     const dataSize = data.byteLength;
@@ -91,7 +104,7 @@ async function runComputeShaderExample() {
             let squareRadius = radius * radius;
             let antiAliasingRange = 0.7;
 
-            let x = global_id.x / 2; // We only care about the x-dimension for a 1D array
+            let x = global_id.x / 4; // We only care about the x-dimension for a 1D array
 
             if (x >= width) {
                 return;
@@ -190,7 +203,7 @@ async function runComputeShaderExample() {
     // If numElements is 16, and workgroup_size is 64, we need 1 workgroup.
     // (16 + 64 - 1) / 64 = 1
     const workgroupCount = WORK_GROUPS;
-    passEncoder.dispatchWorkgroups(2 * Math.ceil(width / 32));
+    passEncoder.dispatchWorkgroups(4 * Math.ceil(width / 32));
     passEncoder.end();
 
     // Copy the result from the GPU-only outputBuffer to the CPU-readable stagingBuffer
