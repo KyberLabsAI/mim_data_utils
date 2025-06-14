@@ -83,6 +83,19 @@ class ControlableViewer {
     }
 }
 
+let hasXR = false;
+if ( typeof navigator !== 'undefined' && 'xr' in navigator ) {
+    hasXR = true;
+}
+
+
+class Pose {
+    constructor(pos, quat) {
+        this.position = pos.clone();
+        this.quaternion = quat.clone();
+    }
+}
+
 class Scene3D {
     constructor(container) {
         this.container = container;
@@ -91,6 +104,14 @@ class Scene3D {
         this.objects = new Map();
         this.currentTimestepData = null;
         this.time = null;
+        this.lastPoseUpdateTime = null;
+        this.lastRenderCameraPose = null;
+
+        this.xrMotionState = {
+            started: false,
+            xRefBegin: null,
+            controllerBegin: null
+        }
 
         this.initScene();
 
@@ -110,6 +131,21 @@ class Scene3D {
         this.viewers[cameraIndex].updateLocation(position, lookAt);
     }
 
+    xrUpdateReferenceSpace(pose) {
+        const vrPos = pose.position;
+        const vrQuat = pose.quaternion;
+
+        const xrPosition = new DOMPointReadOnly(-vrPos.x, -vrPos.y, -vrPos.z);
+        const xrOrientation = new DOMPointReadOnly(vrQuat.x, vrQuat.y, vrQuat.z, vrQuat.w);
+        const offsetTransform = new XRRigidTransform(xrPosition, xrOrientation);
+
+        let viewerReferenceSpace = this.renderer.xr.getReferenceSpace();
+        let customViewerReferenceSpace = viewerReferenceSpace.getOffsetReferenceSpace(offsetTransform);
+
+        // Now, tell the Three.js WebXRManager to use this new reference space
+        this.renderer.xr.setReferenceSpace(customViewerReferenceSpace);
+    }
+
     initScene() {
         // Scene
         const scene = this.scene = new THREE.Scene();
@@ -121,6 +157,9 @@ class Scene3D {
         });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.shadowMap.enabled = true; // Enable shadows
+        renderer.xr.enabled = true;
+        renderer.xr.setReferenceSpaceType('local');
+        renderer.setAnimationLoop(this.render.bind(this));
         document.body.appendChild(renderer.domElement);
 
         renderer.domElement.addEventListener('pointerdown', (evt) => {
@@ -129,6 +168,27 @@ class Scene3D {
                 viewer.toggleControls(i == viewerIdx);
             })
         });
+
+        if (hasXR) {
+            document.body.appendChild(VRButton.createButton(renderer));
+
+            renderer.xr.addEventListener('sessionstart', () => {
+                // Hide the plot in VR.
+                toggleScene(VIEW_STATE_SCENE_ONLY);
+
+                // Update the VR headset position to match the camera.
+                let cameraPos = this.lastRenderCameraPose.position;
+                let cameraQuat = this.lastRenderCameraPose.quaternion;
+
+                const vrQuat = new THREE.Quaternion(
+                    -cameraQuat.x, -cameraQuat.y, -cameraQuat.z, cameraQuat.w);
+
+                const vrPos = cameraPos.applyQuaternion(vrQuat.clone())
+
+                this.xrMotionState.xRefBegin = new Pose(vrPos, vrQuat);
+                this.xrUpdateReferenceSpace(this.xrMotionState.xRefBegin);
+            });
+        }
 
         // Start with a single view on the scene.
         this.addViewer(window.innerWidth / window.innerHeight);
@@ -215,6 +275,9 @@ class Scene3D {
     addObject(obj) {
         this.objects.set(obj.name, obj);
         this.scene.add(obj.getObject());
+
+        // Force objects to get re-positioned.
+        this.lastPoseUpdateTime = null;
     }
 
     setTime(time) {
@@ -239,7 +302,65 @@ class Scene3D {
         renderer.setScissorTest(false);
     }
 
-    render() {
+
+    xrHandleController(time, frame) {
+        const renderer = this.renderer;
+        const xrRefSpace = renderer.xr.getReferenceSpace();
+        const xrSession = renderer.xr.getSession();
+
+        if (!xrSession || !xrRefSpace) {
+            return;
+        }
+
+        for (const inputSource of xrSession.inputSources) {
+            if (!inputSource.gamepad || !inputSource.gripSpace) {
+                continue;
+            }
+
+            // Get the pose of the physical controller relative to your reference space
+            const gripPose = frame.getPose(inputSource.gripSpace, xrRefSpace);
+            const gamepad = inputSource.gamepad;
+
+            if (!gripPose) {
+                continue;
+            }
+
+            // The position is available in gripPose.transform.position
+            const tPos = gripPose.transform.position; // This is an XRRigidTransform object
+            const tQuat = gripPose.transform.orientation;
+
+            const position = new THREE.Vector3(tPos.x, tPos.y, tPos.x);
+            const orientation = new THREE.Quaternion(tQuat.x, tQuat.y, tQuat.z, tQuat.w)
+
+            let motionState = this.xrMotionState;
+            let buttonXPRessed = gamepad.buttons[4].pressed;
+            let buttonYPRessed = gamepad.buttons[5].pressed;
+            if ((buttonXPRessed || buttonYPRessed) && !motionState.started) {
+                motionState.started = true;
+                motionState.controllerBegin = new Pose(position, orientation);
+            } else if (buttonXPRessed || buttonYPRessed) {
+                let posDiff = position.sub(motionState.controllerBegin.position);
+
+                if (buttonXPRessed) {
+                    posDiff.multiply(new THREE.Vector3(0.01, 0.02, 0));
+                } else {
+                    posDiff = new THREE.Vector3(0, 0, 0.01 * posDiff.y);
+                }
+
+                let newPose = new Pose(posDiff, new THREE.Quaternion(0, 0, 0, 1));
+                this.xrUpdateReferenceSpace(newPose);
+            } else {
+                motionState.started = false;
+            }
+
+            // console.log(`Gamepad: ${gamepad.id} - button X, Y: ${buttonXPRessed}, ${buttonYPRessed}`);
+            // console.log(gamepad.buttons);
+            // console.log(`  Pos:  ${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)}`);
+            // console.log(`  Quat: ${orientation.x.toFixed(3)}, ${orientation.y.toFixed(3)}, ${orientation.z.toFixed(3)}, ${orientation.w.toFixed(3)}`);
+        }
+    }
+
+    render(renderTime, xrFrame) {
         let time;
         if (this.time !== null) {
             time = this.time;
@@ -247,22 +368,40 @@ class Scene3D {
             time = traces.getLastTime();
         }
 
-        for (const [name, entry] of this.objects.entries()) {
-            let path = `${name}/pos`;
-            let data = traces.dataAtTime(path, time);
-            if (data) {
+        if (time != this.lastPoseUpdateTime) {
+            this.lastPoseUpdateTime = time;
+
+            for (const [name, entry] of this.objects.entries()) {
                 let obj = entry.getObject();
-                obj.position.set(...data.slice(0, 3));
-                obj.quaternion.set(...data.slice(3))
+
+                let path = `${name}/pos`;
+                let data = traces.dataAtTime(path, time);
+                if (data) {
+                    obj.position.set(...data.slice(0, 3));
+                    obj.quaternion.set(...data.slice(3))
+                }
+
+                path = `${name}/color`;
+                data = traces.dataAtTime(path, time);
+                if (data) {
+                    let material = obj.mesh.material
+                    parseMaterialColor(data, material);
+                    material.needsUpdate = true;
+                }
             }
         }
 
+        if (xrFrame) {
+            this.xrHandleController(renderTime, xrFrame);
+        }
 
         this.viewers.forEach((viewer, i) => {
             viewer.updateControls();
             this._renderViewer(viewer, i);
-        })
+        });
 
+        let firstCamera = this.viewers[0].camera;
+        this.lastRenderCameraPose = new Pose(firstCamera.position, firstCamera.quaternion);
     }
 
     resize() {
@@ -301,30 +440,6 @@ const indices = [
 ];
 
 
-let scene = new Scene3D(document.getElementById('viewer'));
-
-// let mesh = new Mesh3D('triangle', vertices, indices, 0x007bff, [1., 1., 1.])
-// viewer.addObject(mesh.buildObject());
-
-// setTimeout(() => {
-//     name = '3d/sphere'
-//     parsewebSocketData({
-//         '__static__': true,
-//         'name': name,
-//         'data': {
-//             'name': name,
-//             'type': '3dMesh',
-//             'vertices': vertices,
-//             'indices': indices,
-//             'scale': [1., 1., 1.],
-//             'color': '0x007bff'
-//         }
-//     })
-// }, 1000);
-
-let plane = new Plane3D('plane')
-scene.addObject(plane)
-
 function colorArrayToNumber(arr) {
     let res = 0;
     arr.forEach((val, i) => {
@@ -341,6 +456,19 @@ function stepForward() {
     scene.time += 0.05;
 }
 
+function parseMaterialColor(color, material) {
+    if (typeof color == 'string') {
+        color = parseInt(color, 16);
+    } else if (color.length == 3) {
+        color = colorArrayToNumber(color);
+    } else if (color.length == 4) {
+        material.transparent = true;
+        material.opacity = color[3];
+        color = colorArrayToNumber(color.slice(0, 3));
+    }
+    material.color = color;
+}
+
 function addUpdateObject(data) {
     if (!(data.vertices instanceof Float32Array)) {
         data.vertices = new Float32Array(data.vertices)
@@ -350,22 +478,7 @@ function addUpdateObject(data) {
         data.material = {};
     }
 
-    if (data.material.color) {
-        let color = data.material.color;
-        if (typeof color == 'string') {
-            color = parseInt(color, 16);
-        } else if (color.length == 3) {
-            color = colorArrayToNumber(color);
-        } else if (color.length == 4) {
-            data.material.transparent = true;
-            data.material.opacity = color[3];
-            color = colorArrayToNumber(color.slice(0, 3));
-        }
-        data.material.color = color;
-    } else {
-        data.material.color = parseInt('dddddd', 16); // Gray.
-    }
-
+    parseMaterialColor(data.material.color || 'dddddd', data.material)
     scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
 
 

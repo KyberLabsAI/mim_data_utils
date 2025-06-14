@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Three.js WebXR Scene</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #webxr-button {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            font-size: 1.2em;
+            cursor: pointer;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="webxr-button"></div> <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { ARButton } from 'three/addons/webxr/ARButton.js'; // For Augmented Reality
+        import { VRButton } from 'three/addons/webxr/VRButton.js'; // For Virtual Reality
+
+        // Your existing Three.js scene setup will go here
+        let scene, camera, renderer, cube;
+        let cameraPos, cameraEuler, cameraQuat;
+        let firstXRFrame = true;
+
+        let eul = new THREE.Euler(0, Math.PI/2., Math.PI/2 - 0.2, 'ZXY')
+        let quat = new THREE.Quaternion()
+        quat.setFromEuler(eul);
+        console.log(eul, quat, quat.x, quat.y, quat.z, quat.w);
+
+        class Pose {
+            constructor(pos, quat) {
+                this.position = pos.clone();
+                this.quaternion = quat.clone();
+            }
+
+            offsetPosition(diffPos) {
+
+            }
+        }
+
+        let motionState = {
+            started: false,
+            xRefBegin: null,
+            controllerBegin: null
+        }
+
+        function init() {
+            renderer = new THREE.WebGLRenderer();
+            renderer.setPixelRatio( window.devicePixelRatio );
+            renderer.setSize( window.innerWidth, window.innerHeight );
+            renderer.setAnimationLoop( animate );
+            renderer.xr.enabled = true;
+            renderer.xr.setReferenceSpaceType( 'local' );
+            document.body.appendChild( renderer.domElement );
+
+            // 1. Scene setup (your existing scene)
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+
+            camera.position.set(0., 0., 0.5);
+            camera.rotation.set(Math.PI/2, 0,  + 0.2, 'ZXY');
+
+            cameraPos = camera.position.clone();
+            cameraQuat = camera.quaternion.clone();
+            // console.log(cameraQuat);
+
+            cameraEuler = new THREE.Euler();
+            cameraEuler.setFromQuaternion(cameraQuat);
+            // console.log(cameraEuler);
+
+            cameraEuler.reorder('ZXY');
+
+            // const cameraGroup = new THREE.Group();
+            // cameraGroup.add(camera);
+            // scene.add(cameraGroup);
+
+            // Add a simple object to the scene
+            const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+            const material = new THREE.MeshNormalMaterial();
+            cube = new THREE.Mesh(geometry, material);
+            cube.position.set(0., 1, 0)
+            scene.add(cube);
+
+            const geometry2 = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+            const material2 = new THREE.MeshNormalMaterial();
+            let cube2 = new THREE.Mesh(geometry2, material2);
+            cube2.position.set(0., 1., 0.65);
+            scene.add(cube2);
+
+            // Add lighting (important for realistic rendering)
+            const ambientLight = new THREE.AmbientLight(0x404040); // Soft white light
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight.position.set(1, 1, 1).normalize();
+            scene.add(directionalLight);
+
+
+
+            // 3. Add the WebXR Button (choose ARButton or VRButton)
+            // For VR:
+            document.body.appendChild( VRButton.createButton( renderer ) );
+
+            // For AR (replace the above line if you want AR):
+            // document.body.appendChild( ARButton.createButton( renderer ) );
+
+            // Event listener for window resizing
+            window.addEventListener('resize', onWindowResize);
+
+            function quatFromAxisAngle(x, y, z, angle) {
+                let quat = new THREE.Quaternion();
+                quat.setFromAxisAngle(new THREE.Vector3(x, y, z), angle);
+                return quat;
+            }
+
+            // console.log(quatFromAxisAngle(1, 0, 0, Math.PI));
+
+            let Rx = quatFromAxisAngle(1, 0, 0, Math.PI);
+            let Rz = quatFromAxisAngle(0, 0, 1, Math.PI);
+
+            let vrQuat = Rx.multiply(Rz.multiply(cameraQuat));
+            // console.log(vrQuat);
+
+            renderer.xr.addEventListener('sessionstart', () => {
+                const vrQuat = new THREE.Quaternion(
+                    -cameraQuat.x, -cameraQuat.y, -cameraQuat.z, cameraQuat.w);
+
+                const vrPos = cameraPos.applyQuaternion(vrQuat.clone())
+                motionState.xRefBegin = new Pose(vrPos, vrQuat);
+                updateReferenceSpace(motionState.xRefBegin);
+            });
+        }
+
+        function updateReferenceSpace(pose) {
+            const vrPos = pose.position;
+            const vrQuat = pose.quaternion;
+
+            const xrPosition = new DOMPointReadOnly(-vrPos.x, -vrPos.y, -vrPos.z);
+            const xrOrientation = new DOMPointReadOnly(vrQuat.x, vrQuat.y, vrQuat.z, vrQuat.w);
+            const offsetTransform = new XRRigidTransform(xrPosition, xrOrientation);
+
+            let viewerReferenceSpace = renderer.xr.getReferenceSpace();
+            let customViewerReferenceSpace = viewerReferenceSpace.getOffsetReferenceSpace(offsetTransform);
+
+            // Now, tell the Three.js WebXRManager to use this new reference space
+            renderer.xr.setReferenceSpace(customViewerReferenceSpace);
+        }
+
+        function onWindowResize() {
+
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+
+            renderer.setSize( window.innerWidth, window.innerHeight );
+
+        }
+
+
+
+        function handleXRAnimate(time, frame) {
+            const xrRefSpace = renderer.xr.getReferenceSpace();
+            const xrSession = renderer.xr.getSession();
+
+            if (!xrSession || !xrRefSpace) {
+                return;
+            }
+
+            for (const inputSource of xrSession.inputSources) {
+                if (!inputSource.gamepad || !inputSource.gripSpace) {
+                    continue;
+                }
+
+                // Get the pose of the physical controller relative to your reference space
+                const gripPose = frame.getPose(inputSource.gripSpace, xrRefSpace);
+                const gamepad = inputSource.gamepad;
+
+                if (!gripPose) {
+                    continue;
+                }
+
+                // The position is available in gripPose.transform.position
+                const tPos = gripPose.transform.position; // This is an XRRigidTransform object
+                const tQuat = gripPose.transform.orientation;
+
+                const position = new THREE.Vector3(tPos.x, tPos.y, tPos.x);
+                const orientation = new THREE.Quaternion(tQuat.x, tQuat.y, tQuat.z, tQuat.w)
+
+                const handType = inputSource.handedness === 'left' ? 'Left' : 'Right';
+
+
+                let buttonXPRessed = gamepad.buttons[4].pressed;
+                let buttonYPRessed = gamepad.buttons[5].pressed;
+                if ((buttonXPRessed || buttonYPRessed) && !motionState.started) {
+                    motionState.started = true;
+                    motionState.controllerBegin = new Pose(position, orientation);
+                } else if (buttonXPRessed) {
+                    let posDiff = position.sub(motionState.controllerBegin.position);
+                    posDiff.multiply(new THREE.Vector3(0.01, 0.02, 0));
+
+                    let newPose = new Pose(
+                        posDiff,
+                        new THREE.Quaternion(0, 0, 0, 1)
+                    );
+                    updateReferenceSpace(newPose);
+                } else if (buttonYPRessed) {
+                    let posDiff = position.sub(motionState.controllerBegin.position);
+                    posDiff = new THREE.Vector3(0, 0, 0.01 * posDiff.y);
+
+                    let newPose = new Pose(
+                        posDiff,
+                        new THREE.Quaternion(0, 0, 0, 1)
+                    );
+                    updateReferenceSpace(newPose);
+                } else {
+                    motionState.started = false;
+                }
+
+                console.log(`Gamepad: ${gamepad.id} - button X, Y: ${buttonXPRessed}, ${buttonYPRessed}`);
+                console.log(gamepad.buttons);
+                console.log(`  Pos:  ${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)}`);
+                console.log(`  Quat: ${orientation.x.toFixed(3)}, ${orientation.y.toFixed(3)}, ${orientation.z.toFixed(3)}, ${orientation.w.toFixed(3)}`);
+            }
+        }
+
+        function animate(time, frame) {
+            if (frame) {
+                handleXRAnimate(time, frame);
+            }
+
+            renderer.render( scene, camera );
+        }
+
+        init();
+    </script>
+</body>
+</html>
