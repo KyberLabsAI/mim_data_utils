@@ -26,41 +26,61 @@ async function runComputeShaderExample() {
     // 1. Define the input data
     let WORK_GROUPS = 32;
     let points = 2 * 800;
-    const data = new Float32Array(4 * points); // Using more data for better demonstration
+    const data = new Float32Array(2 * points); // Using more data for better demonstration
 
     let fx = x => 125 * Math.sin(2 * Math.PI * x / 100) + 150
 
-    ctx2.lineWidth = 6;
-    ctx2.beginPath();
+    ctx2.lineWidth = 3;
+
 
     ctx2.moveTo(0, fx(0));
 
     let dx = width / points;
     let x = 0;
 
+    // for (let i = 0; i < points; i++) {
+    //     let from = fx(x);
+    //     x += dx;
+    //     let to = fx(x);
+
+    //     let hheight = Math.max(ctx2.lineWidth, Math.abs(from - to)) / 2
+
+    //     let center = (from + to) / 2;
+    //     let yFrom = center - hheight;
+    //     let yTo = center + hheight;
+
+    //     data[2 * i + 0] = yFrom;
+    //     data[2 * i + 1] = yTo;
+    // }
+
+    i = 100;
+    data[2 * i + 0] = 100
+    data[2 * i + 1] = 200
+
+    i = 101;
+    data[2 * i + 0] = 150
+    data[2 * i + 1] = 250
+
+
+    x = 0;
     for (let i = 0; i < points; i++) {
-        data[4 * i] = x;
-        data[4 * i + 1] = fx(x);
+        x += dx;
 
-        x += dx
-        data[4 * i + 2] = x;
-        data[4 * i + 3] = fx(x);
-
-        let height = Math.abs(data[4 * i + 3] - data[4 * i + 1]);
-        let center = Math.min(data[4 * i + 3], data[4 * i + 1]) + height / 2;
-        height = Math.max(ctx2.lineWidth, height)
-
-        console.log(height);
-
-        ctx2.moveTo(data[4 * i + 2], center - height / 2);
-        ctx2.lineTo(data[4 * i + 2], center + height / 2);
-
-        // ctx2.lineTo(data[4 * i + 2], data[4 * i + 3]);
-
-
+        ctx2.beginPath();
+        ctx2.moveTo(x + 0.5, data[2 * i + 0]);
+        ctx2.lineTo(x + 0.5, data[2 * i + 1]);
+        ctx2.stroke();
     }
 
-    ctx2.stroke()
+
+
+
+    ctx2.beginPath();
+    ctx2.moveTo(20 + 0.5, 40);
+    ctx2.lineTo(20 + 0.5, 3000);
+    // ctx2.moveTo(20 + 1., 50);
+    // ctx2.lineTo(20 + 1., 70);
+    ctx2.stroke();
 
     const dataSize = data.byteLength;
     const numElements = data.length;
@@ -100,43 +120,40 @@ async function runComputeShaderExample() {
         fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let width = 800u;
             let height = 300u;
-            let radius = 3.;
-            let squareRadius = radius * radius;
-            let antiAliasingRange = 0.7;
+            let hlineWidth = 1;
 
-            let x = global_id.x / 4; // We only care about the x-dimension for a 1D array
+            let x = global_id.x; // We only care about the x-dimension for a 1D array
 
             if (x >= width) {
                 return;
             }
 
-            for (var y: u32 = 0; y < height / 2; y++) {
-                let P = vec2f(f32(x), f32(y));
+            for (var y: u32 = 0; y < height; y++) {
+                var covered = 0u;
+                for (var dx: i32 = 0; dx < 1; dx += 1) {
+                    let lxFrom = u32(max(0, 2 * i32(x) - hlineWidth + dx));
+                    let lxTo = u32(min(2 * i32(width - 1) , 2 * i32(x) + hlineWidth + dx));
 
-                let A = vec2f(2., 3.);
-                let B = vec2f(5., 6.);
-                let v = B - A;
-                let v2 = dot(v, v);
-                var rgba = vec4u(0, 0, 0, 0);
+                    for (var dy: f32 = 0.; dy < 1.; dy += 0.5) {
+                        let yval = f32(y) + dy;
 
-                for (var i: u32 = 0; i < 350; i++) {
-                    let dxy = vec2f(f32(i), f32(y));
-
-                    let t = 2 + dot(dxy, v) / v2;
-
-                    let t_out = f32(t >= 0 && t <= 1);
-
-                    let P_closest = A + t * v;
-                    let dist = length(P - P_closest);
-
-                    let d_out = f32(dist <= 800.);
-
-                    if (t_out * d_out == 1) {
-                        rgba.w = 255;
+                        for (var lx: u32 = lxFrom; lx <= lxTo; lx += 1u) {
+                            if (inputData[2 * lx + 0] <= yval && yval <= inputData[2 * lx + 1]) {
+                            // if (f32(lx) <= yval && yval < f32(lx + 2u)) {
+                                covered += 1u;
+                                break;
+                            }
+                        }
                     }
                 }
 
-                outputPixel[x + width * y] = ((rgba.x << 24) | (rgba.y << 16) | (rgba.z << 8) | rgba.w);
+                if (covered >= 4u) {
+                    outputPixel[x + width * y] = ((255) | (0 << 8) | (0 << 16) | (255 << 24));
+                } else if (covered > 0) {
+                    outputPixel[x + width * y] = ((0) | (0 << 8) | (255 << 16) | (255 << 24));
+                // outputPixel[x + width * y] = ((255) | (0 << 8) | (0 << 16) | ((covered * 63) << 24));
+                }
+
             }
         }
     `;
@@ -203,7 +220,7 @@ async function runComputeShaderExample() {
     // If numElements is 16, and workgroup_size is 64, we need 1 workgroup.
     // (16 + 64 - 1) / 64 = 1
     const workgroupCount = WORK_GROUPS;
-    passEncoder.dispatchWorkgroups(4 * Math.ceil(width / 32));
+    passEncoder.dispatchWorkgroups(Math.ceil(width / 32));
     passEncoder.end();
 
     // Copy the result from the GPU-only outputBuffer to the CPU-readable stagingBuffer
