@@ -309,7 +309,7 @@ class SeriesData {
         if (x0c == x1c) {
             yLim = this._findYLimPartialChunk(x0c, x0p, x1p, index, yLim);
         } else {
-            yLim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].to - 1, index, yLim);
+            yLim = this._findYLimPartialChunk(x0c, x0p, this.chunks[x0c].entries - 1, index, yLim);
             yLim = this._findYLimPartialChunk(x1c, 0, x1p, index, yLim);
         }
 
