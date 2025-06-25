@@ -384,7 +384,7 @@ class Scene3D {
                 path = `${name}/color`;
                 data = traces.dataAtTime(path, time);
                 if (data) {
-                    let material = obj.mesh.material
+                    let material = entry.mesh.material;
                     parseMaterialColor(data, material);
                     material.needsUpdate = true;
                 }
@@ -443,7 +443,7 @@ const indices = [
 function colorArrayToNumber(arr) {
     let res = 0;
     arr.forEach((val, i) => {
-        res += Math.floor(val * 255) << (8 * (2 - i));
+        res += Math.floor(val) << (8 * (2 - i));
     });
     return res;
 }
@@ -458,15 +458,23 @@ function stepForward() {
 
 function parseMaterialColor(color, material) {
     if (typeof color == 'string') {
-        color = parseInt(color, 16);
+        if (color.length == 6) {
+            material.transparent = false;
+            colorValue = parseInt(color, 16);
+        } else {
+            material.transparent = true;
+            material.opacity = parseInt(color.substring(6), 16) / 255;
+            colorValue = parseInt(color.substring(0, 6), 16);
+        }
     } else if (color.length == 3) {
-        color = colorArrayToNumber(color);
+        material.transparent = false;
+        colorValue = colorArrayToNumber(color);
     } else if (color.length == 4) {
         material.transparent = true;
-        material.opacity = color[3];
-        color = colorArrayToNumber(color.slice(0, 3));
+        material.opacity = color[3] / 255;
+        colorValue = colorArrayToNumber(color.slice(0, 3));
     }
-    material.color = color;
+    material.color = new THREE.Color(colorValue);
 }
 
 function addUpdateObject(data) {
