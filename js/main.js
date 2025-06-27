@@ -276,6 +276,7 @@ function eventCallback(type, evt) {
                 freeze(true);
             }
 
+            layoutDom.blur();
             evt.preventDefault();
             break;
 
@@ -324,6 +325,20 @@ function eventCallback(type, evt) {
 
     }
 }
+
+window.addEventListener('keydown', evt => {
+    if (evt.target != document.body) {
+        return;
+    }
+    switch (evt.key) {
+        case 'ArrowLeft':
+            stepBack();
+            break;
+        case 'ArrowRight':
+            stepForward();
+            break;
+    }
+})
 
 const VIEW_STATE_SCENE_ONLY = 2;
 var viewSceneState = 0;
