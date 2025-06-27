@@ -326,16 +326,32 @@ function eventCallback(type, evt) {
     }
 }
 
+function timeAmountFromKeyEvent(evt) {
+    if (evt.ctrlKey) {
+        return 0.5;
+    } else if (evt.altKey) {
+        return 0.001
+    } else {
+        return undefined;
+    }
+}
+
 window.addEventListener('keydown', evt => {
     if (evt.target != document.body) {
         return;
     }
     switch (evt.key) {
         case 'ArrowLeft':
-            stepBack();
+            stepBack(timeAmountFromKeyEvent(evt));
+            evt.preventDefault();
             break;
         case 'ArrowRight':
-            stepForward();
+            stepForward(timeAmountFromKeyEvent(evt));
+            evt.preventDefault();
+            break;
+        case 'Enter':
+            marks.addMark(scene.time)
+            evt.preventDefault();;
             break;
     }
 })

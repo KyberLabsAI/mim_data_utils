@@ -448,12 +448,16 @@ function colorArrayToNumber(arr) {
     return res;
 }
 
-function stepBack() {
-    scene.time -= 0.05;
+function timeStepAmount(amount) {
+    return amount = amount || 0.05;
 }
 
-function stepForward() {
-    scene.time += 0.05;
+function stepBack(amount) {
+    scene.time -= timeStepAmount(amount);
+}
+
+function stepForward(amount) {
+    scene.time += timeStepAmount(amount);
 }
 
 function parseMaterialColor(color, material) {
