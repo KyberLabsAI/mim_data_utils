@@ -3,93 +3,91 @@ let wsMaxData = 5 * 60 * 1000;
 
 let lastTime = 0;
 
+function parseTimeSample(data) {
+    let t = parseFloat(data.time);
+
+    // Ignore new data in case the view is frozen and there is no space
+    // in the traces object left.
+    if (isFrozen && traces.willEvictFirstData(wsMaxData)) {
+        return false;
+    }
+
+    traces.beginTimestep(t, wsMaxData);
+
+    for (let [key, value] of Object.entries(data.payload)) {
+        if (key === 'time') {
+            continue;
+        }
+
+        let valueType = typeof value;
+
+        if (valueType === 'boolean') {
+            value = value ? 1 : 0;
+        }
+
+        if (valueType === 'number') {
+            value = [value]
+        } else if (valueType == 'string') {
+            if (value.startsWith("array('d', [") || value.startsWith("array('f', [")) {
+                value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
+            } else {
+                continue; // Ignorning generic strings for now.
+            }
+        }
+
+        traces.record(key, value)
+    }
+
+    traces.endTimestep();
+    return false;
+}
+
 function parsewebSocketData(data) {
     let relayout = false;
-    let time = data['time'];
+    let type = data.type;
 
-    // HACK: Abusing the `time` entry for other things...
-    switch (time) {
-        case 'static':
-            for (let [key, value] of Object.entries(data)) {
+    if (data.type == 'sample') {
+        if (data.time == 'static') {
+            for (let [key, value] of Object.entries(data.payload)) {
                 if (key === 'time') {
                     continue;
                 }
                 traces.recordStaticData(key, value);
             }
             relayout = true;
-            break
-
-        case 'clear':
-            wsMaxData = data['maxData'];
-            scene.clear();
-            traces.clear(wsMaxData);
-            updateLayout(); // Redo layout as data was cleared.
-            freeZoom();
-            toggleScene(false);
-            relayout = true;
-            break;
-
-        case 'command':
-            let name = data['name'];
-            let payload = data['payload'];
-            if (name == '3dCamera') {
-                scene.addViewer();
-            } else if (name == '3dCameraLocation') {
-                scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
-            } else if (name == 'zoomReset') {
+        } else {
+            relayout = parseTimeSample(data)
+        }
+    } else if (data.type == 'command') {
+        let payload = data.payload;
+        switch (data.name) {
+            case 'clear':
+                wsMaxData = payload.maxData;
+                scene.clear();
+                traces.clear(wsMaxData);
+                updateLayout(); // Redo layout as data was cleared.
                 freeZoom();
-            }
-            break;
-
-        case 'layout':
-            layoutDom.value = data['layout'];
-            updateLayout();
-            break;
-
-        default:
-            let t = parseFloat(time);
-
-            if (Math.abs(t - lastTime) > 5) {
-                traces.clear();
-                relayout = true
-            }
-
-            lastTime = t;
-
-            // Ignore new data in case the view is frozen and there is no space
-            // in the traces object left.
-            if (isFrozen && traces.willEvictFirstData(wsMaxData)) {
+                toggleScene(false);
+                relayout = true;
                 break;
-            }
 
-            traces.beginTimestep(t, wsMaxData);
+            case '3dCamera':
+                scene.addViewer();
+                break
 
-            for (let [key, value] of Object.entries(data)) {
-                if (key === 'time') {
-                    continue;
-                }
+            case '3dCameraLocation':
+                scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
+                break
 
-                let valueType = typeof value;
+            case 'zoomReset':
+                freeZoom();
+                break;
 
-                if (valueType === 'boolean') {
-                    value = value ? 1 : 0;
-                }
-
-                if (valueType === 'number') {
-                    value = [value]
-                } else if (valueType == 'string') {
-                    if (value.startsWith("array('d', [") || value.startsWith("array('f', [")) {
-                        value = value.slice(12, -2).split(', ').map(v => parseFloat(v))
-                    } else {
-                        continue; // Ignorning generic strings for now.
-                    }
-                }
-
-                traces.record(key, value)
-            }
-
-            traces.endTimestep();
-            break;
+            case 'layout':
+                layoutDom.value = payload;
+                updateLayout();
+                break;
+        }
     }
 
     if (relayout) {

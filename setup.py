@@ -51,14 +51,16 @@ for (root, _, files) in walk(path.join("examples")):
 # Final setup.
 setup(
     name=package_name,
-    version="1.0.0",
+    version="2.0.0",
     package_dir={package_name: path.join("python", package_name)},
     packages=[package_name],
     package_data={package_name: resources},
     scripts=scripts_list,
     install_requires=[
         "setuptools",
-        "websockets"
+        "websocket-server",
+        'orjson',
+        'meshio'
     ],
     zip_safe=True,
     maintainer="Julian Viereck",
