@@ -109,12 +109,39 @@ function updatePlotViewport() {
     return xlim;
 }
 
+function subs_expand(value, subs) {
+    return value.replaceAll( /\{([^}]+)\}/g, (_, g0) => subs.get(g0))
+}
+
+function transform_subs(value) {
+    value = value.replaceAll(' ', '');
+    let bits = value.split(';')
+
+    let subs = new Map();
+    let res = [];
+
+    bits.forEach(bit => {
+        let capture = bit.match(/^([^=]+)=(.+)$/);
+
+        if (capture) {
+            subs.set(capture[1], subs_expand(capture[2], subs));
+        } else {
+            res.push(subs_expand(bit, subs));
+        }
+    })
+
+    return res;
+}
+
 function updateLayout() {
     plotLayout = layoutDom.value;
     localStorage.setItem('layout', plotLayout);
 
+    // Handle definitions / substitutions like "x=12:3;sin[{x}]"
+    plotLayoutPieces = transform_subs(plotLayout);
+
     // Update the plots if needed.
-    let plotDefs = plotLayout.split(';').map(plotDef => {
+    let plotDefs = plotLayoutPieces.map(plotDef => {
         let parts = [];
         while (plotDef.length > 0) {
             let match = plotDef.match(/(([^\[]+)\[([^\]]*)\],*)/);
