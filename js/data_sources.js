@@ -101,6 +101,7 @@ let domMessage = document.getElementById('message');
 let ws = null;
 function connectViaWebSocket() {
     ws = new WebSocket("ws://127.0.0.1:5678/");
+    ws.binaryType = "arraybuffer";
 
     let firstData = true;
     ws.onmessage = function (event) {
@@ -112,7 +113,7 @@ function connectViaWebSocket() {
             dataRecord = []
         }
 
-        let data = JSON.parse(event.data);
+        let data = MessagePack.decode(new Uint8Array(event.data));
 
         // if (dataRecord.length < 100) {
         //     dataRecord.push(event.data);

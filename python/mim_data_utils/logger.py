@@ -4,11 +4,11 @@ from pathlib import Path
 import numpy as np
 import threading
 
-from websocket_server import WebsocketServer
+from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
 
 import zstandard
 import struct
-import orjson
+import ormsgpack
 
 import queue
 import multiprocessing
@@ -74,15 +74,15 @@ class FileLoggerWriter:
         if self.is_full:
             return
 
-        data_json = orjson.dumps(data, option=orjson.OPT_SERIALIZE_NUMPY)
-        header = struct.pack('>I', len(data_json))
+        data_msgp = ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+        header = struct.pack('>I', len(data_msgp))
 
         with self.swap_lock:
             if self.fh is None:
                 self.init()
 
             self.compressor.write(header)
-            self.compressor.write(data_json)
+            self.compressor.write(data_msgp)
 
 
     def close(self):
@@ -131,8 +131,7 @@ class FileLoggerReader:
 
             next_size = struct.unpack('>I', header)[0]
 
-            payload = self.reader.read(next_size).decode("utf-8")
-            self.buffer = orjson.loads(payload)
+            self.buffer = ormsgpack.unpackb(self.reader.read(next_size))
 
         # Return the first entry from the buffered reads. Convert lists
         # to numpy arrays.
@@ -157,6 +156,52 @@ class FileLoggerReader:
         self.reader.close()
         self.fh.close()
 
+
+
+class BinaryWebSocketServer(threading.Thread):
+    def __init__(self, host='0.0.0.0', port=9001):
+        super().__init__(daemon=True)  # run as daemon thread
+        self.host = host
+        self.port = port
+        self.clients = set()
+        self._server = None
+
+        class Handler(WebSocket):
+            """Inner class to handle clients."""
+            server_ref = self  # reference to outer class
+
+            def handleMessage(inner_self):
+                if isinstance(inner_self.data, bytes):
+                    print("Received binary data:", inner_self.data)
+                else:
+                    print("Received text:", inner_self.data)
+
+            def handleConnected(inner_self):
+                print(f"Client connected: {inner_self.address}")
+                Handler.server_ref.clients.add(inner_self)
+
+            def handleClose(inner_self):
+                print(f"Client disconnected: {inner_self.address}")
+                Handler.server_ref.clients.discard(inner_self)
+
+        self.Handler = Handler
+
+    def run(self):
+        """Start the WebSocket server."""
+        self._server = SimpleWebSocketServer(self.host, self.port, self.Handler)
+        print(f"Websocket server running on ws://{self.host}:{self.port}")
+        self._server.serveforever()
+
+    def broadcast(self, data: bytes):
+        """Send binary data to all connected clients."""
+        for client in list(self.clients):  # list() to avoid set change during iteration
+            try:
+                client.sendMessage(data)
+            except Exception as e:
+                print("Failed to send to client:", e)
+                self.clients.discard(client)  # remove dead client
+
+
 class WebsocketWriter:
     def __init__(self, host='127.0.0.1', port=5678):
         self.host = host
@@ -164,15 +209,15 @@ class WebsocketWriter:
         self.server = None
 
     def init(self):
-        self.server = WebsocketServer(host=self.host, port=self.port)
-        self.server.run_forever(threaded=True)
+        self.server = BinaryWebSocketServer(host=self.host, port=self.port)
+        self.server.start()
 
     def log(self, data):
         if self.server is None:
             self.init()
 
-        data_json = orjson.dumps(data, option=orjson.OPT_SERIALIZE_NUMPY)
-        self.server.send_message_to_all(data_json.decode("utf-8"))
+        data_msgp = ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+        self.server.broadcast(data_msgp)
 
     def close(self):
         self.server.shutdown_gracefully()

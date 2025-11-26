@@ -58,8 +58,9 @@ setup(
     scripts=scripts_list,
     install_requires=[
         "setuptools",
-        "websocket-server",
-        'orjson',
+        "SimpleWebSocketServer",
+        "ormsgpack",
+        'zstandard',
         'meshio'
     ],
     zip_safe=True,
