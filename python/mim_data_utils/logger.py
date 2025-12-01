@@ -186,6 +186,10 @@ class BinaryWebSocketServer(threading.Thread):
 
         self.Handler = Handler
 
+    @property
+    def num_clients(self):
+        return len(self.clients)
+
     def run(self):
         """Start the WebSocket server."""
         self._server = SimpleWebSocketServer(self.host, self.port, self.Handler)
@@ -223,6 +227,16 @@ class WebsocketWriter:
         self.server.shutdown_gracefully()
         self.server = None
 
+    def wait_for_client(self, timeout_s=5):
+        tic = time.time()
+
+        while time.time() < tic + timeout_s:
+            if self.server.num_clients > 0:
+                return
+
+            time.sleep(0.1)
+
+        print('No websocket client connected.')
 
 def call_method(method, arr, idx=None):
     if idx is not None:

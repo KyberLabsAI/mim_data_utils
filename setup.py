@@ -71,14 +71,13 @@ setup(
     url="https://github.com/machines-in-motion/mim_data_utils/",
     description="Utils for robot data handling and plotting",
     license="BSD-3-clause",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [],
     },
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: BSD-3-clause",
-        "Operating System :: OS Independent",
-    ],
     python_requires=">=3.6",
+    data_files=[
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+    ],
 )
