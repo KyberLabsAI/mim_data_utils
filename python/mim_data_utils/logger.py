@@ -399,6 +399,9 @@ class Logger(threading.Thread):
                 res['time'] = value
                 continue
 
+            if key.startswith('_'):
+                continue
+
             if issubclass(val_type, (float, int, bool, str)):
                 res[key] = value
             elif issubclass(val_type, np.generic):
@@ -413,6 +416,8 @@ class Logger(threading.Thread):
             elif issubclass(val_type,  tuple(self.loggable_value_classes)):
                 res[key] = value.to_log_dict(key)
             elif issubclass(val_type, list):
+                if len(value) > 0 and not np.isscalar(value[0]):
+                    continue
                 res[key] = np.array(value, np.float32).copy()
             elif not silent_error:
                 raise ValueError(f"Asked to log unsupported value ({str(value)}) for path '{key}'.")
