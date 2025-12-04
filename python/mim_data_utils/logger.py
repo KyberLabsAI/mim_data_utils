@@ -365,6 +365,9 @@ class Logger(threading.Thread):
             'maxData': max_data
         })
 
+    def zoom_reset(self):
+        self.command('zoomReset', {})
+
     def command(self, name, payload):
         self._append_log({
             'type': 'command',
