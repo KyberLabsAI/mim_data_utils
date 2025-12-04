@@ -98,6 +98,9 @@ function parsewebSocketData(data) {
 let dataRecord = [];
 let domMessage = document.getElementById('message');
 
+let packets = 0;
+let datas = 0;
+
 let ws = null;
 function connectViaWebSocket() {
     ws = new WebSocket("ws://127.0.0.1:5678/");
@@ -121,6 +124,8 @@ function connectViaWebSocket() {
         // }
 
         data.forEach(parsewebSocketData);
+        packets += 1;
+        datas += data.length;
 
         if (firstData) {
             firstData = false;

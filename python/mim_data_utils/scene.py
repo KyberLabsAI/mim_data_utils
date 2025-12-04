@@ -137,7 +137,11 @@ class Scene:
         self.objs[name]['color'] = color
 
     def update_pos(self, name, x, mujoco=False):
-        if isinstance(x, Pose):
+        # Fast-path
+        if x.shape[0] == 7 and not mujoco:
+            self.objs[name]['pos'][:] = x
+            return
+        elif isinstance(x, Pose):
             trans = x.trans()
             quat = x.quat()
         elif np.all(np.array(x.shape) == np.array([4, 4])):

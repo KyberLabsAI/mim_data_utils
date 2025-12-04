@@ -192,7 +192,7 @@ class BinaryWebSocketServer(threading.Thread):
 
     def run(self):
         """Start the WebSocket server."""
-        self._server = SimpleWebSocketServer(self.host, self.port, self.Handler)
+        self._server = SimpleWebSocketServer(self.host, self.port, self.Handler, selectInterval=0.01)
         print(f"Websocket server running on ws://{self.host}:{self.port}")
         self._server.serveforever()
 
@@ -220,6 +220,8 @@ class WebsocketWriter:
         if self.server is None:
             self.init()
 
+        self.last_data = data
+        
         data_msgp = ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY)
         self.server.broadcast(data_msgp)
 
@@ -344,7 +346,7 @@ class Logger(threading.Thread):
     def run(self):
         while self.keep_running:
             self.flush()
-            time.sleep(0.03)
+            time.sleep(0.01)
 
     def flush(self):
         # Only send data if there is any.
