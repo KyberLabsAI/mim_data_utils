@@ -152,6 +152,8 @@
     uniform mat2 u_transformCenter;
     uniform vec4 u_color;
     uniform float u_z;
+    uniform mat2 u_viewport2pixel;
+    uniform float u_aspectCorrection;
 
     in vec2 lineCenter;
     in vec2 lineTangential;
@@ -159,13 +161,12 @@
 
     void main() {
       float lineWidth = 1.;
-      mat2 viewport2pixel = mat2(400, 0, 0, 200);
 
       mat2 transformTangential = mat2(u_transformCenter[1][1], 0, 0, u_transformCenter[0][0]);
       vec2 tangentialViewport = transformTangential * lineTangential;
-      tangentialViewport.x = tangentialViewport.x * 0.25; // <- magic scaling factor?
+      tangentialViewport.x = tangentialViewport.x * u_aspectCorrection;
 
-      vec2 tangentialPixel = viewport2pixel * tangentialViewport;
+      vec2 tangentialPixel = u_viewport2pixel * tangentialViewport;
       vec2 lwTangential = (lineWidth / length(tangentialPixel)) * tangentialViewport;
 
       gl_Position = vec4(

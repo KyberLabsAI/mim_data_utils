@@ -309,6 +309,8 @@ class GLLineDrawer {
         this.transformCenterUniformLocation = gl.getUniformLocation(program, "u_transformCenter");
         this.colorUniformLocation = gl.getUniformLocation(program, "u_color");
         this.zUniformLocation = gl.getUniformLocation(program, "u_z");
+        this.viewport2pixelUniformLocation = gl.getUniformLocation(program, "u_viewport2pixel");
+        this.aspectCorrectionUniformLocation = gl.getUniformLocation(program, "u_aspectCorrection");
     }
 
     bindData(gpuData) {
@@ -351,6 +353,18 @@ class GLLineDrawer {
             this.zoomX, 0,
             0, this.zoomY
         ])
+
+        // Set viewport2pixel matrix based on canvas dimensions
+        // Converts from viewport coordinates (-1 to 1) to pixel coordinates
+        gl.uniformMatrix2fv(this.viewport2pixelUniformLocation, false, [
+            canvas.width / 2, 0,
+            0, canvas.height / 2
+        ])
+
+        // Set aspect ratio correction for line thickness
+        // Compensates for non-square canvas (e.g., 1200px × 300px = 0.25)
+        let aspectCorrection = canvas.height / canvas.width;
+        gl.uniform1f(this.aspectCorrectionUniformLocation, aspectCorrection);
 
         gl.uniform1f(this.zUniformLocation, style.z);
 
