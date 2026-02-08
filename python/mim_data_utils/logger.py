@@ -385,3 +385,11 @@ class Logger(threading.Thread):
             'payload': res
         })
 
+    def log_image(self, name, data, time):
+        self._append_log({
+            'type': 'image',
+            'time': time,
+            'name': name,
+            'payload': data
+        })
+

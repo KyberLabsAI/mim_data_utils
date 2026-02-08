@@ -6,6 +6,7 @@ let hasData = false;
 let traces = new Traces(wsMaxData, eventCallback);
 traces.callbackFn.push(event3DCallback)
 
+let imageStore = new ImageStore(20000);
 let marks = new Marks();
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
@@ -475,6 +476,15 @@ let draw = () => {
 
         traces.view.xlim = xlim;
         traces.view.newData = false;
+    }
+
+    if (imageVisible) {
+        let absTime = scene.absoluteTime();
+        let url = imageStore.getFrameAtTime(absTime);
+        let imgEl = document.getElementById('imageView');
+        if (url && imgEl.src !== url) {
+            imgEl.src = url;
+        }
     }
 }
 

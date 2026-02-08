@@ -58,6 +58,8 @@ function parsewebSocketData(data) {
         } else {
             relayout = parseTimeSample(data)
         }
+    } else if (data.type == 'image') {
+        imageStore.addFrame(parseFloat(data.time), data.payload);
     } else if (data.type == 'command') {
         let payload = data.payload;
         switch (data.name) {
