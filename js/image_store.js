@@ -49,6 +49,35 @@ class ImageStore {
         return this.urls[lo];
     }
 
+    evictRange(timeStart, timeEnd) {
+        // Binary search for first index where time >= timeStart
+        let lo = 0, hi = this.times.length;
+        while (lo < hi) {
+            let mid = (lo + hi) >> 1;
+            if (this.times[mid] < timeStart) lo = mid + 1;
+            else hi = mid;
+        }
+        let start = lo;
+
+        // Binary search for last index where time <= timeEnd
+        lo = start;
+        hi = this.times.length - 1;
+        while (lo < hi) {
+            let mid = (lo + hi + 1) >> 1;
+            if (this.times[mid] <= timeEnd) lo = mid;
+            else hi = mid - 1;
+        }
+
+        if (start >= this.times.length || this.times[start] > timeEnd) return;
+        let end = lo + 1;
+
+        for (let i = start; i < end; i++) {
+            URL.revokeObjectURL(this.urls[i]);
+        }
+        this.times.splice(start, end - start);
+        this.urls.splice(start, end - start);
+    }
+
     clear() {
         this.urls.forEach(url => URL.revokeObjectURL(url));
         this.times = [];

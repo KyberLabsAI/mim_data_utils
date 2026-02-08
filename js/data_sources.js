@@ -2,6 +2,7 @@ let wsMaxData = 5 * 60 * 1000;
 //let wsMaxData = 1000 * 1000;
 
 let lastTime = 0;
+let _imageAutoOpened = false;
 
 function parseTimeSample(data) {
     let t = parseFloat(data.time);
@@ -59,7 +60,17 @@ function parsewebSocketData(data) {
             relayout = parseTimeSample(data)
         }
     } else if (data.type == 'image') {
+        if (!imageVisible && !_imageAutoOpened) {
+            _imageAutoOpened = true;
+            toggleImage();
+        }
         imageStore.addFrame(parseFloat(data.time), data.payload);
+    } else if (data.type == 'video_segment') {
+        if (!imageVisible && !_imageAutoOpened) {
+            _imageAutoOpened = true;
+            toggleImage();
+        }
+        videoStore.onSegmentAvailable(data);
     } else if (data.type == 'command') {
         let payload = data.payload;
         switch (data.name) {
@@ -67,6 +78,7 @@ function parsewebSocketData(data) {
                 wsMaxData = payload.maxData;
                 scene.clear();
                 traces.clear(wsMaxData);
+                videoStore.clear();
                 updateLayout(); // Redo layout as data was cleared.
                 freeZoom();
                 toggleScene(false);

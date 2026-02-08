@@ -7,6 +7,9 @@ let traces = new Traces(wsMaxData, eventCallback);
 traces.callbackFn.push(event3DCallback)
 
 let imageStore = new ImageStore(20000);
+let videoStore = new VideoStore(document.getElementById('videoView'), (tStart, tEnd) => {
+    imageStore.evictRange(tStart, tEnd);
+});
 let marks = new Marks();
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
@@ -304,7 +307,7 @@ function eventCallback(type, evt) {
                 freeze(true);
             }
 
-            layoutDom.blur();
+            document.activeElement.blur();
             evt.preventDefault();
             break;
 
@@ -480,10 +483,26 @@ let draw = () => {
 
     if (imageVisible) {
         let absTime = scene.absoluteTime();
-        let url = imageStore.getFrameAtTime(absTime);
+        let videoEl = document.getElementById('videoView');
         let imgEl = document.getElementById('imageView');
-        if (url && imgEl.src !== url) {
-            imgEl.src = url;
+        if (videoStore.isVideoReadyForTime(absTime)) {
+            videoEl.style.display = '';
+            imgEl.style.display = 'none';
+            seg = videoStore.syncToTime(absTime);
+            if (seg) {
+                console.log('Segment sync to: ' + seg.file);
+            }
+            
+        } else {
+            videoEl.style.display = 'none';
+            imgEl.style.display = '';
+            let url = imageStore.getFrameAtTime(absTime);
+            if (url && imgEl.src !== url) {
+                imgEl.src = url;
+            }
+            if (videoStore.hasVideoForTime(absTime)) {
+                videoStore.syncToTime(absTime);
+            }
         }
     }
 }
@@ -576,5 +595,6 @@ function removeMark() {
 
 
 connectViaWebSocket();
+videoStore.loadExistingSegments();
 updateSignals();
 updateLayout();
