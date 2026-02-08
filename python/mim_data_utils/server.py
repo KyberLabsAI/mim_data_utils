@@ -1,3 +1,4 @@
+import os
 import threading
 import traceback
 import time
@@ -243,6 +244,11 @@ if __name__ == "__main__":
     websocket = BinaryWebSocketServer(WebsocketHandlerPubSub, host='127.0.0.1', port=5678)
     websocket.start()
     time.sleep(0.1)  # Give the thread time to print
+
+    from http_server import StaticFileServer
+    _pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    static_server = StaticFileServer(directory=_pkg_root, port=8000)
+    static_server.start()
 
     # Broadcast the timeseries data to all the websocket clients.
     def on_message(topic, data):
