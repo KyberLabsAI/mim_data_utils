@@ -393,3 +393,12 @@ class Logger(threading.Thread):
             'payload': data
         })
 
+    def log_video_segment(self, name, segment_info, init_file, base_url):
+        self._append_log({
+            'type': 'video_segment',
+            'name': name,
+            'segment': segment_info,
+            'init_file': init_file,
+            'base_url': base_url
+        })
+

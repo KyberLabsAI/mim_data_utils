@@ -50,8 +50,11 @@ if __name__ == "__main__":
 
     fps = 60
 
-    shutil.rmtree('recordings', ignore_errors=True)
-    os.makedirs('recordings')
+    _pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    recordings_dir = os.path.join(_pkg_root, 'recordings')
+
+    shutil.rmtree(recordings_dir, ignore_errors=True)
+    os.makedirs(recordings_dir)
 
     ffmpeg_proc = subprocess.Popen([
         "ffmpeg", "-y",
@@ -70,14 +73,15 @@ if __name__ == "__main__":
         "-hls_list_size", "0",
         "-hls_segment_type", "fmp4",
         "-hls_fmp4_init_filename", "init.mp4",
-        "-hls_segment_filename", "recordings/segment%03d.mp4",
+        "-hls_segment_filename", os.path.join(recordings_dir, "segment%03d.mp4"),
         "-hls_flags", "append_list",
-        "recordings/stream.m3u8",
+        os.path.join(recordings_dir, "stream.m3u8"),
     ], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     segment_timestamps = []
     completed_segments = []
     current_segment_idx = 0
+    segment_frame_offset = 0
     frame_count = 0
 
     t0 = time.time()
@@ -110,30 +114,34 @@ if __name__ == "__main__":
                 frame_count += 1
 
                 # Check if ffmpeg created a new segment file
-                next_seg = f'recordings/segment{current_segment_idx + 1:03d}.mp4'
+                next_seg = os.path.join(recordings_dir, f'segment{current_segment_idx + 1:03d}.mp4')
                 if os.path.exists(next_seg):
                     seg_file = f'segment{current_segment_idx:03d}'
-                    with open(f'recordings/{seg_file}.json', 'w') as f:
-                        json.dump({"fps": fps, "frame_to_time": segment_timestamps}, f)
+                    with open(os.path.join(recordings_dir, f'{seg_file}.json'), 'w') as f:
+                        json.dump({"fps": fps, "frame_offset": segment_frame_offset, "frame_to_time": segment_timestamps}, f)
+                    segment_info = {
+                        "file": f"{seg_file}.mp4",
+                        "time_start": segment_timestamps[0],
+                        "time_end": segment_timestamps[-1],
+                        "fps": fps,
+                        "index": current_segment_idx,
+                        "frame_offset": segment_frame_offset,
+                        "frame_to_time": list(segment_timestamps)
+                    }
                     completed_segments.append({
                         "file": f"{seg_file}.mp4",
                         "time_start": segment_timestamps[0],
                         "time_end": segment_timestamps[-1]
                     })
+                    logger.log_video_segment('camera', segment_info, 'init.mp4', 'recordings/')
+                    segment_frame_offset += len(segment_timestamps)
                     segment_timestamps = []
                     current_segment_idx += 1
 
-                # Write overview timestamps.json every ~1 second
+                # Write overview timestamps.json every ~1 second (only completed segments)
                 if frame_count % fps == 0:
-                    overview_segs = list(completed_segments)
-                    if segment_timestamps:
-                        overview_segs.append({
-                            "file": f"segment{current_segment_idx:03d}.mp4",
-                            "time_start": segment_timestamps[0],
-                            "time_end": segment_timestamps[-1]
-                        })
-                    with open('recordings/timestamps.json', 'w') as f:
-                        json.dump({"fps": fps, "segments": overview_segs}, f)
+                    with open(os.path.join(recordings_dir, 'timestamps.json'), 'w') as f:
+                        json.dump({"fps": fps, "segments": list(completed_segments)}, f)
 
             time.sleep(0.001)
     except KeyboardInterrupt:
@@ -144,8 +152,8 @@ if __name__ == "__main__":
         # Write final segment JSON
         if segment_timestamps:
             seg_file = f'segment{current_segment_idx:03d}'
-            with open(f'recordings/{seg_file}.json', 'w') as f:
-                json.dump({"fps": fps, "frame_to_time": segment_timestamps}, f)
+            with open(os.path.join(recordings_dir, f'{seg_file}.json'), 'w') as f:
+                json.dump({"fps": fps, "frame_offset": segment_frame_offset, "frame_to_time": segment_timestamps}, f)
             completed_segments.append({
                 "file": f"{seg_file}.mp4",
                 "time_start": segment_timestamps[0],
@@ -153,7 +161,7 @@ if __name__ == "__main__":
             })
 
         # Write final overview
-        with open('recordings/timestamps.json', 'w') as f:
+        with open(os.path.join(recordings_dir, 'timestamps.json'), 'w') as f:
             json.dump({"fps": fps, "segments": completed_segments}, f)
 
         print(f'Recorded {frame_count} frames across {current_segment_idx + 1} segments.')
