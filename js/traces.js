@@ -44,7 +44,7 @@ class SeriesDataChunk {
         this.name = name;
         this.size = size;
         this.dim = dim;
-        this.times = new Float32Array(size);
+        this.times = new Float64Array(size);
         this.timedData = Array.from(Array(dim)).map(_ => new Float32Array(size));
         this.timedDataYLimits = Array.from(Array(dim)).map(_ => new Lim(0, 0));
         this.timeFrom = 0;

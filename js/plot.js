@@ -90,6 +90,7 @@ class Plot {
     }
 
     setViewport(xl, yl, xh, yh) {
+        this.viewport = [xl, yl, xh, yh];
         this.axesDrawer.setViewport(xl, yl, xh, yh);
         this.lineDrawer.setViewport(xl, yl, xh, yh);
     }
@@ -156,6 +157,8 @@ class Plot {
             } else {
                 this.lines.toReversed().forEach(line => {
                     let lineData = traces.getLineData(line.dataName, line.dataIdx);
+                    let offset = lineData.timeOffset;
+                    this.lineDrawer.setViewport(xlim[0] - offset, this.viewport[1], xlim[1] - offset, this.viewport[3]);
                     let xlimIndices = lineData.findXLimIndices(xlim);
                     let chunks = lineData.chunks;
                     for (let idx = xlimIndices.from.chunkIdx; idx <= xlimIndices.to.chunkIdx; idx++) {

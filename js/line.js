@@ -240,18 +240,20 @@ class LineData {
 
     clear() {
         this.chunks = [new LineChunck(this.chunkSize)]
+        this.timeOffset = 0;
     }
 
     findXIdx(x) {
         let chunks = this.chunks;
+        let xRel = x - this.timeOffset;
 
-        let cIdx = binarySearch(0, this.chunks.length - 1, x, (idx) => {
+        let cIdx = binarySearch(0, this.chunks.length - 1, xRel, (idx) => {
             let chunk = chunks[idx];
             return chunk.lineCenter[2 * (chunk.to - 1)];
         });
 
         let chunk = chunks[cIdx];
-        let pIdx = binarySearch(chunk.from, chunk.to - 1, x, (idx) => {
+        let pIdx = binarySearch(chunk.from, chunk.to - 1, xRel, (idx) => {
             return chunk.lineCenter[2 * idx];
         });
 
@@ -283,7 +285,11 @@ class LineData {
             this._addChunk();
         }
 
-        this.chunks.at(-1).appendPoint(x, y);
+        if (this.timeOffset === 0 && x !== 0) {
+            this.timeOffset = x;
+        }
+
+        this.chunks.at(-1).appendPoint(x - this.timeOffset, y);
     }
 }
 
