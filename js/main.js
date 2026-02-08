@@ -365,7 +365,7 @@ function timeAmountFromKeyEvent(evt) {
 }
 
 window.addEventListener('keydown', evt => {
-    if (evt.target != document.body) {
+    if (evt.target.matches('input, select, textarea')) {
         return;
     }
     switch (evt.key) {
