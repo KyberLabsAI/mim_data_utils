@@ -61,7 +61,8 @@ setup(
         "SimpleWebSocketServer",
         "ormsgpack",
         'zstandard',
-        'meshio'
+        'meshio',
+        'pyzmq'
     ],
     zip_safe=True,
     maintainer="Julian Viereck",
