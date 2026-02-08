@@ -42,6 +42,48 @@
     grid-column: 2 / span 0;
     grid-row: 2 / 2;
     position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+.image-panel {
+    display: none;
+}
+
+.image-panel img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.viewer-panel {
+    flex: 1;
+    position: relative;
+    display: none;
+}
+
+.showBoth .viewer-panel,
+.showSceneOnly .viewer-panel {
+    display: block;
+}
+
+.showImage .left-div {
+  grid-column: 1 / span 1;
+}
+
+.showImage .right-div {
+  grid-column: 2 / span 1;
+}
+
+.showImage:not(.showBoth):not(.showSceneOnly) .image-panel {
+  display: block;
+  flex: 1;
+}
+
+.showImage.showBoth .image-panel,
+.showImage.showSceneOnly .image-panel {
+  display: block;
+  flex: 0 0 auto;
 }
 
 .showBoth .left-div {
@@ -60,7 +102,7 @@
   grid-column: 1 / span 2;
 }
 
-.right-div canvas {
+.viewer-panel canvas {
     position: absolute;
     bottom: 0;
     top: 0;
@@ -104,6 +146,7 @@
         <button onclick="onRefreshDerivedClick()">Refresh Derived</button> -->
         <button onclick="freeze()">Freeze</button>
         <button onclick="toggleScene()">Toggle Scene</button>
+        <button onclick="toggleImage()">Toggle Image</button>
         <button onclick="removeMark()">Remove Mark</button>
         <button onclick="stepBack()">t--</button>
         <button onclick="stepForward()">t++</button>
@@ -139,7 +182,12 @@
         </p>
     </div>
     <div class="left-div" id="plots"></div>
-    <div class="right-div" id="viewer"></div>
+    <div class="right-div">
+        <div class="image-panel" id="imagePanel">
+            <img id="imageView" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'%3E%3Crect width='1920' height='1080' fill='%23888'/%3E%3Ctext x='960' y='540' text-anchor='middle' dominant-baseline='central' font-family='sans-serif' font-size='48' fill='%23fff'%3ENo Image%3C/text%3E%3C/svg%3E" />
+        </div>
+        <div id="viewer" class="viewer-panel"></div>
+    </div>
   </div>
 
 

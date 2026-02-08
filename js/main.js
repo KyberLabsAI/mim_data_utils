@@ -422,6 +422,15 @@ function toggleScene(state) {
     forcePlotRefresh = true;
 }
 
+let imageVisible = false;
+function toggleImage() {
+    imageVisible = !imageVisible;
+    document.body.classList.toggle('showImage', imageVisible);
+    forcePlotRefresh = true;
+    shouldResize = true;
+    scene.resize();
+}
+
 var isFrozen = false;
 function freeze(newValue) {
     if (newValue !== undefined) {
