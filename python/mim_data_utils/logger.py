@@ -1,5 +1,6 @@
 import os
 import time
+import random
 from pathlib import Path
 import numpy as np
 import threading
@@ -15,6 +16,21 @@ import multiprocessing
 
 from .scene import RawMesh, Scene
 from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
+
+_SESSION_WORDS = [
+    'red', 'blue', 'green', 'gold', 'silver', 'amber', 'coral', 'jade',
+    'ruby', 'pearl', 'ivory', 'crimson', 'azure', 'violet', 'indigo',
+    'oak', 'pine', 'elm', 'maple', 'birch', 'cedar', 'willow', 'fern',
+    'moss', 'river', 'lake', 'stone', 'cliff', 'ridge', 'vale', 'brook',
+    'storm', 'frost', 'dawn', 'dusk', 'mist', 'rain', 'snow', 'wind',
+    'wolf', 'bear', 'hawk', 'deer', 'fox', 'owl', 'lynx', 'crane',
+    'robin', 'finch', 'swift', 'raven', 'eagle', 'otter', 'heron',
+    'bold', 'calm', 'keen', 'warm', 'cool', 'quick', 'brave', 'bright',
+    'north', 'south', 'east', 'west', 'iron', 'flint', 'spark', 'ember',
+]
+
+def _generate_session_name():
+    return '-'.join(random.sample(_SESSION_WORDS, 3))
 
 
 class FileLoggerWriter:
@@ -158,20 +174,44 @@ class FileLoggerReader:
         self.fh.close()
 
 class WebsocketWriter:
+    def __init__(self):
+        self.session_name =  None
+
     def init(self):
-        self.publisher = ZmqPublisher('/timeseries/')
+        assert(self.session_name is not None)
+
+        self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
+        self.camera_publisher = ZmqPublisher('/camera/')
+        self.session_publisher = ZmqPublisher('/session/')
         self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
+    def set_session(self, name):
+        self.session_name = name
+        
     def log(self, data):
         if self.publisher is None:
             self.init()
 
         self.last_data = data
-        self.publisher.send(ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY))
+
+        camera_items = [d for d in data if d.get('type') in ('image', 'video_segment')]
+        other_items = [d for d in data if d.get('type') not in ('image', 'video_segment')]
+
+        if camera_items:
+            self.camera_publisher.send(ormsgpack.packb(camera_items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
+        if other_items:
+            self.publisher.send(ormsgpack.packb(other_items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
+
+    def session_action(self, data):
+        self.session_publisher.send(ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY))
 
     def close(self):
         if self.publisher:
             self.publisher.close()
+        if hasattr(self, 'camera_publisher') and self.camera_publisher:
+            self.camera_publisher.close()
+        if hasattr(self, 'session_publisher') and self.session_publisher:
+            self.session_publisher.close()
 
     def wait_for_client(self, timeout_s=5):
         tic = time.time()
@@ -272,6 +312,12 @@ class Logger(threading.Thread):
         super().__init__()
 
         self.server = server
+        self.session_name = _generate_session_name()
+
+        server.set_session(self.session_name)
+        self.activate_session()
+
+        print(f"Session: {self.session_name}")
 
         self.log_queue = queue.Queue()
         self.loggable_value_classes = [RawMesh, Scene]
@@ -303,6 +349,9 @@ class Logger(threading.Thread):
 
     def _append_log(self, data):
         self.log_queue.put(data)
+
+    def activate_session(self):
+        self.server.session_action({'type': 'activate', 'name': self.session_name})
 
     def clear(self, max_data=(5 * 60 * 1000)):
         self.command('clear', {
@@ -382,6 +431,7 @@ class Logger(threading.Thread):
         self._append_log({
             'type': 'sample',
             'time': time,
+            'session': self.session_name,
             'payload': res
         })
 

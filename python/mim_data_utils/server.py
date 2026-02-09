@@ -3,6 +3,7 @@ import threading
 import traceback
 import time
 
+import ormsgpack
 from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
 from kyber_utils.zeromq import (
     ZmqBroker,
@@ -106,16 +107,36 @@ if __name__ == "__main__":
     static_server = StaticFileServer(directory=_pkg_root, port=8000)
     static_server.start()
 
-    # Broadcast the timeseries data to all the websocket clients.
-    def on_message(topic, data):
+    active_session = None
+    active_topic = None
+
+    def on_session(topic, data):
+        nonlocal active_session, active_topic
+        msg = ormsgpack.unpackb(data)
+        name = msg.get('name') or msg.get(b'name')
+        if isinstance(name, bytes):
+            name = name.decode()
+        active_session = name
+        active_topic = f'/timeseries/{name}'.encode()
+        print(f"Active session set to: {active_session}")
+
+    def on_camera(topic, data):
         websocket.broadcast(data)
 
-    sub = ZmqSubscriber('/timeseries/', callback=on_message)
-    
+    def on_timeseries(topic, data):
+        if active_topic and topic == active_topic:
+            websocket.broadcast(data)
+
+    sub_session = ZmqSubscriber('/session/', callback=on_session)
+    sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
+    sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
+
     print("Publishing timeseries (Ctrl+C to stop)...")
     try:
         while True:
             time.sleep(1.)
     except KeyboardInterrupt:
         print("\nStopped.")
-        sub.close()
+        sub_session.close()
+        sub_camera.close()
+        sub_timeseries.close()
