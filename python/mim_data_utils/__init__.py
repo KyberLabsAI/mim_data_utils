@@ -12,4 +12,7 @@ from .logger import (
 )
 
 from .scene import RawMesh, Mesh, Scene
-from .mujoco import MujocoVisualizer
+try:
+    from .mujoco import MujocoVisualizer
+except ImportError:
+    pass

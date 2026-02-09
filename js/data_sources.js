@@ -64,13 +64,15 @@ function parsewebSocketData(data) {
             _imageAutoOpened = true;
             toggleImage();
         }
-        imageStore.addFrame(parseFloat(data.time), data.payload);
+        let cam = getOrCreateCamera(data.name || 'default');
+        cam.addImage(parseFloat(data.time), data.payload);
     } else if (data.type == 'video_segment') {
         if (!imageVisible && !_imageAutoOpened) {
             _imageAutoOpened = true;
             toggleImage();
         }
-        videoStore.onSegmentAvailable(data);
+        let cam = getOrCreateCamera(data.name || 'default');
+        cam.addVideoSegment(data);
     } else if (data.type == 'command') {
         let payload = data.payload;
         switch (data.name) {
@@ -78,7 +80,7 @@ function parsewebSocketData(data) {
                 wsMaxData = payload.maxData;
                 scene.clear();
                 traces.clear(wsMaxData);
-                videoStore.clear();
+                clearAllCameras();
                 updateLayout(); // Redo layout as data was cleared.
                 freeZoom();
                 toggleScene(false);

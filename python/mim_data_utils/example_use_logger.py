@@ -5,10 +5,10 @@ import shutil
 import subprocess
 import json
 import numpy as np
-from logger import Logger
+from .logger import Logger
 
 
-def render_frame(cx, cy, size=1920, height=1080, cube_size=60):
+def render_frame(cx, cy, color, size=1920, height=1080, cube_size=60):
     """Render a 1080p RGB frame with a cube at (cx, cy) in normalized [-1,1] coords."""
     w, h = size, height
 
@@ -22,10 +22,10 @@ def render_frame(cx, cy, size=1920, height=1080, cube_size=60):
     x1 = min(w, px + half)
     y1 = min(h, py + half)
 
-    # Build raw RGB image (dark background, white cube)
+    # Build raw RGB image (dark background, colored cube)
     img = np.full((h, w, 3), 30, dtype=np.uint8)
     if x0 < x1 and y0 < y1:
-        img[y0:y1, x0:x1] = [255, 200, 50]
+        img[y0:y1, x0:x1] = color
 
     return img
 
@@ -39,24 +39,12 @@ def encode_jpeg(img):
     return buf.getvalue()
 
 
-if __name__ == "__main__":
-    logger_server = Logger.start_server()
-    logger = Logger(logger_server)
+def make_camera(name, fps, recordings_base):
+    """Create per-camera state: FFmpeg subprocess, recordings dir, tracking dicts."""
+    cam_dir = os.path.join(recordings_base, name)
+    os.makedirs(cam_dir, exist_ok=True)
 
-    print('Waiting for clients...')
-    logger_server.wait_for_client()
-
-    print('Clients ready!')
-
-    fps = 60
-
-    _pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    recordings_dir = os.path.join(_pkg_root, 'recordings')
-
-    shutil.rmtree(recordings_dir, ignore_errors=True)
-    os.makedirs(recordings_dir)
-
-    ffmpeg_proc = subprocess.Popen([
+    proc = subprocess.Popen([
         "ffmpeg", "-y",
         "-f", "rawvideo",
         "-pix_fmt", "rgb24",
@@ -73,20 +61,122 @@ if __name__ == "__main__":
         "-hls_list_size", "0",
         "-hls_segment_type", "fmp4",
         "-hls_fmp4_init_filename", "init.mp4",
-        "-hls_segment_filename", os.path.join(recordings_dir, "segment%03d.mp4"),
+        "-hls_segment_filename", os.path.join(cam_dir, "segment%03d.mp4"),
         "-hls_flags", "append_list",
-        os.path.join(recordings_dir, "stream.m3u8"),
+        os.path.join(cam_dir, "stream.m3u8"),
     ], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
-    segment_timestamps = []
-    completed_segments = []
-    current_segment_idx = 0
-    segment_frame_offset = 0
-    frame_count = 0
+    return {
+        'name': name,
+        'fps': fps,
+        'dir': cam_dir,
+        'proc': proc,
+        'segment_timestamps': [],
+        'completed_segments': [],
+        'current_segment_idx': 0,
+        'segment_frame_offset': 0,
+        'frame_count': 0,
+        'last_image_time': 0,
+        'image_interval': 1.0 / fps,
+    }
+
+
+def process_camera_frame(cam, img, t, logger):
+    """Feed a frame to a camera's FFmpeg, check for new segments, log image."""
+    jpeg_data = encode_jpeg(img)
+    logger.log_image(cam['name'], jpeg_data, t)
+
+    cam['proc'].stdin.write(img.tobytes())
+    cam['segment_timestamps'].append(t)
+    cam['frame_count'] += 1
+
+    cam_dir = cam['dir']
+    idx = cam['current_segment_idx']
+    fps = cam['fps']
+
+    # Check if ffmpeg created a new segment file
+    next_seg = os.path.join(cam_dir, f'segment{idx + 1:03d}.mp4')
+    if os.path.exists(next_seg):
+        seg_file = f'segment{idx:03d}'
+        with open(os.path.join(cam_dir, f'{seg_file}.json'), 'w') as f:
+            json.dump({"fps": fps, "frame_offset": cam['segment_frame_offset'],
+                        "frame_to_time": cam['segment_timestamps']}, f)
+        segment_info = {
+            "file": f"{seg_file}.mp4",
+            "time_start": cam['segment_timestamps'][0],
+            "time_end": cam['segment_timestamps'][-1],
+            "fps": fps,
+            "index": idx,
+            "frame_offset": cam['segment_frame_offset'],
+            "frame_to_time": list(cam['segment_timestamps'])
+        }
+        cam['completed_segments'].append({
+            "file": f"{seg_file}.mp4",
+            "time_start": cam['segment_timestamps'][0],
+            "time_end": cam['segment_timestamps'][-1]
+        })
+        logger.log_video_segment(cam['name'], segment_info, 'init.mp4',
+                                  f'recordings/{cam["name"]}/')
+        cam['segment_frame_offset'] += len(cam['segment_timestamps'])
+        cam['segment_timestamps'] = []
+        cam['current_segment_idx'] += 1
+
+    # Write overview timestamps.json every ~1 second
+    if cam['frame_count'] % fps == 0:
+        with open(os.path.join(cam_dir, 'timestamps.json'), 'w') as f:
+            json.dump({"fps": fps, "segments": list(cam['completed_segments'])}, f)
+
+
+def finalize_camera(cam):
+    """Shut down a camera's FFmpeg and write final segment data."""
+    cam['proc'].stdin.close()
+    cam['proc'].wait()
+
+    if cam['segment_timestamps']:
+        seg_file = f'segment{cam["current_segment_idx"]:03d}'
+        with open(os.path.join(cam['dir'], f'{seg_file}.json'), 'w') as f:
+            json.dump({"fps": cam['fps'], "frame_offset": cam['segment_frame_offset'],
+                        "frame_to_time": cam['segment_timestamps']}, f)
+        cam['completed_segments'].append({
+            "file": f"{seg_file}.mp4",
+            "time_start": cam['segment_timestamps'][0],
+            "time_end": cam['segment_timestamps'][-1]
+        })
+
+    with open(os.path.join(cam['dir'], 'timestamps.json'), 'w') as f:
+        json.dump({"fps": cam['fps'], "segments": cam['completed_segments']}, f)
+
+    print(f'  {cam["name"]}: {cam["frame_count"]} frames, '
+          f'{cam["current_segment_idx"] + 1} segments')
+
+
+if __name__ == "__main__":
+    logger_server = Logger.start_server()
+    logger = Logger(logger_server)
+
+    print('Waiting for clients...')
+    logger_server.wait_for_client()
+
+    print('Clients ready!')
+
+    _pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    recordings_dir = os.path.join(_pkg_root, 'recordings')
+
+    shutil.rmtree(recordings_dir, ignore_errors=True)
+    os.makedirs(recordings_dir)
+
+    cam_yellow = make_camera('camera_yellow', 30, recordings_dir)
+    cam_green = make_camera('camera_green', 55, recordings_dir)
+    all_cams = [cam_yellow, cam_green]
+
+    # Write camera index for frontend startup discovery
+    with open(os.path.join(recordings_dir, 'cameras.json'), 'w') as f:
+        json.dump({"cameras": [c['name'] for c in all_cams]}, f)
+
+    color_yellow = [255, 200, 50]
+    color_green = [50, 200, 80]
 
     t0 = time.time()
-    last_image_time = 0
-    image_interval = 1.0 / fps
 
     try:
         while True:
@@ -102,66 +192,20 @@ if __name__ == "__main__":
                 'cos': cos_val
             }, t)
 
-            # Log image at target fps
-            if dt - last_image_time >= image_interval:
-                last_image_time = dt
-                img = render_frame(0.5 * sin_val, 0.5 * cos_val)
-                jpeg_data = encode_jpeg(img)
-                logger.log_image('camera', jpeg_data, t)
+            # Yellow camera at 30 fps
+            if dt - cam_yellow['last_image_time'] >= cam_yellow['image_interval']:
+                cam_yellow['last_image_time'] = dt
+                img = render_frame(0.5 * sin_val, 0.5 * cos_val, color_yellow)
+                process_camera_frame(cam_yellow, img, t, logger)
 
-                ffmpeg_proc.stdin.write(img.tobytes())
-                segment_timestamps.append(t)
-                frame_count += 1
-
-                # Check if ffmpeg created a new segment file
-                next_seg = os.path.join(recordings_dir, f'segment{current_segment_idx + 1:03d}.mp4')
-                if os.path.exists(next_seg):
-                    seg_file = f'segment{current_segment_idx:03d}'
-                    with open(os.path.join(recordings_dir, f'{seg_file}.json'), 'w') as f:
-                        json.dump({"fps": fps, "frame_offset": segment_frame_offset, "frame_to_time": segment_timestamps}, f)
-                    segment_info = {
-                        "file": f"{seg_file}.mp4",
-                        "time_start": segment_timestamps[0],
-                        "time_end": segment_timestamps[-1],
-                        "fps": fps,
-                        "index": current_segment_idx,
-                        "frame_offset": segment_frame_offset,
-                        "frame_to_time": list(segment_timestamps)
-                    }
-                    completed_segments.append({
-                        "file": f"{seg_file}.mp4",
-                        "time_start": segment_timestamps[0],
-                        "time_end": segment_timestamps[-1]
-                    })
-                    logger.log_video_segment('camera', segment_info, 'init.mp4', 'recordings/')
-                    segment_frame_offset += len(segment_timestamps)
-                    segment_timestamps = []
-                    current_segment_idx += 1
-
-                # Write overview timestamps.json every ~1 second (only completed segments)
-                if frame_count % fps == 0:
-                    with open(os.path.join(recordings_dir, 'timestamps.json'), 'w') as f:
-                        json.dump({"fps": fps, "segments": list(completed_segments)}, f)
+            # Green camera at 55 fps
+            if dt - cam_green['last_image_time'] >= cam_green['image_interval']:
+                cam_green['last_image_time'] = dt
+                img = render_frame(-0.5 * sin_val, -0.5 * cos_val, color_green)
+                process_camera_frame(cam_green, img, t, logger)
 
             time.sleep(0.001)
     except KeyboardInterrupt:
         print('\nShutting down...')
-        ffmpeg_proc.stdin.close()
-        ffmpeg_proc.wait()
-
-        # Write final segment JSON
-        if segment_timestamps:
-            seg_file = f'segment{current_segment_idx:03d}'
-            with open(os.path.join(recordings_dir, f'{seg_file}.json'), 'w') as f:
-                json.dump({"fps": fps, "frame_offset": segment_frame_offset, "frame_to_time": segment_timestamps}, f)
-            completed_segments.append({
-                "file": f"{seg_file}.mp4",
-                "time_start": segment_timestamps[0],
-                "time_end": segment_timestamps[-1]
-            })
-
-        # Write final overview
-        with open(os.path.join(recordings_dir, 'timestamps.json'), 'w') as f:
-            json.dump({"fps": fps, "segments": completed_segments}, f)
-
-        print(f'Recorded {frame_count} frames across {current_segment_idx + 1} segments.')
+        for cam in all_cams:
+            finalize_camera(cam)

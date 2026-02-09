@@ -13,8 +13,8 @@ import ormsgpack
 import queue
 import multiprocessing
 
-from scene import RawMesh, Scene
-from server import ZmqPublisher, ZmqRemoteValue
+from .scene import RawMesh, Scene
+from .server import ZmqPublisher, ZmqRemoteValue
 
 
 class FileLoggerWriter:

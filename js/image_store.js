@@ -1,6 +1,6 @@
 class ImageStore {
     constructor(maxFrames) {
-        this.maxFrames = maxFrames || 20000;
+        this.maxFrames = maxFrames || 5000;
         this.times = [];
         this.urls = [];
     }

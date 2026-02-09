@@ -6,10 +6,20 @@ let hasData = false;
 let traces = new Traces(wsMaxData, eventCallback);
 traces.callbackFn.push(event3DCallback)
 
-let imageStore = new ImageStore(20000);
-let videoStore = new VideoStore(document.getElementById('videoView'), (tStart, tEnd) => {
-    imageStore.evictRange(tStart, tEnd);
-});
+let cameras = new Map(); // name -> CameraPlayback
+let camerasContainer = document.getElementById('camerasContainer');
+
+function getOrCreateCamera(name) {
+    if (cameras.has(name)) return cameras.get(name);
+    let cam = new CameraPlayback(name, camerasContainer);
+    cameras.set(name, cam);
+    return cam;
+}
+
+function clearAllCameras() {
+    cameras.forEach(cam => cam.remove());
+    cameras.clear();
+}
 let marks = new Marks();
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
@@ -483,27 +493,7 @@ let draw = () => {
 
     if (imageVisible) {
         let absTime = scene.absoluteTime();
-        let videoEl = document.getElementById('videoView');
-        let imgEl = document.getElementById('imageView');
-        if (videoStore.isVideoReadyForTime(absTime)) {
-            videoEl.style.display = '';
-            imgEl.style.display = 'none';
-            seg = videoStore.syncToTime(absTime);
-            if (seg) {
-                console.log('Segment sync to: ' + seg.file);
-            }
-            
-        } else {
-            videoEl.style.display = 'none';
-            imgEl.style.display = '';
-            let url = imageStore.getFrameAtTime(absTime);
-            if (url && imgEl.src !== url) {
-                imgEl.src = url;
-            }
-            if (videoStore.hasVideoForTime(absTime)) {
-                videoStore.syncToTime(absTime);
-            }
-        }
+        cameras.forEach(cam => cam.syncToTime(absTime));
     }
 }
 
@@ -594,7 +584,40 @@ function removeMark() {
 }
 
 
+function loadAllCameraSegments() {
+    // Try multi-camera layout: recordings/cameras.json lists camera names
+    fetch('http://127.0.0.1:8000/recordings/cameras.json')
+        .then(r => {
+            if (!r.ok) throw new Error('No cameras.json');
+            return r.json();
+        })
+        .then(data => {
+            (data.cameras || []).forEach(name => {
+                let cam = getOrCreateCamera(name);
+                cam.loadExistingSegments(`recordings/${name}/`);
+            });
+            if (data.cameras && data.cameras.length > 0 && !imageVisible) {
+                toggleImage();
+            }
+        })
+        .catch(() => {
+            // Fallback: try old single-camera layout at recordings/timestamps.json
+            fetch('http://127.0.0.1:8000/recordings/timestamps.json')
+                .then(r => {
+                    if (!r.ok) throw new Error('No timestamps.json');
+                    let cam = getOrCreateCamera('camera');
+                    cam.loadExistingSegments('recordings/')
+                        .then(() => {
+                            if (cam.videoStore.segments.length > 0 && !imageVisible) {
+                                toggleImage();
+                            }
+                        });
+                })
+                .catch(() => {});
+        });
+}
+
 connectViaWebSocket();
-videoStore.loadExistingSegments();
+loadAllCameraSegments();
 updateSignals();
 updateLayout();
