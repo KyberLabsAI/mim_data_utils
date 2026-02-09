@@ -192,6 +192,11 @@ class WebsocketWriter:
 
     def set_session(self, name):
         self.session_name = name
+
+        # Need to reconnect the publishers as the timeseries endpoint changes.
+        if self.publisher:
+            self.close()
+            self.init()
         
     def log(self, data):
         if self.publisher is None:
@@ -313,14 +318,17 @@ class Logger(threading.Thread):
     def to_subprocess():
         return SubprocessWriter()
 
-    def __init__(self, server, layout_def=None, start=True):
+    def __init__(self, server, layout_def=None, start=True, make_session_active=True):
         super().__init__()
 
         self.server = server
         self.session_name = _generate_session_name()
 
         server.set_session(self.session_name)
-        self.activate_session()
+
+        # When just publishing image / video, no need to make session active.
+        if make_session_active:
+            self.activate_session()
 
         print(f"Session: {self.session_name}")
 
