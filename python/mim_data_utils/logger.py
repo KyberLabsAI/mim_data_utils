@@ -14,7 +14,7 @@ import queue
 import multiprocessing
 
 from .scene import RawMesh, Scene
-from .server import ZmqPublisher, ZmqRemoteValue
+from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
 
 
 class FileLoggerWriter:
