@@ -176,14 +176,19 @@ class FileLoggerReader:
 class WebsocketWriter:
     def __init__(self):
         self.session_name =  None
+        self.publisher = None
 
     def init(self):
         assert(self.session_name is not None)
 
         self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
         self.camera_publisher = ZmqPublisher('/camera/')
-        self.session_publisher = ZmqPublisher('/session/')
         self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
+
+        if not self.publisher.wait_connected():
+            raise ConnectionError('Timeseries publisher failed to connect to ZMQ broker')
+        if not self.camera_publisher.wait_connected():
+            raise ConnectionError('Camera publisher failed to connect to ZMQ broker')
 
     def set_session(self, name):
         self.session_name = name
@@ -203,15 +208,17 @@ class WebsocketWriter:
             self.publisher.send(ormsgpack.packb(other_items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
 
     def session_action(self, data):
-        self.session_publisher.send(ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY))
+        if self.publisher is None:
+            self.init()
+
+        active_session = ZmqRemoteValue('active_session')
+        active_session.set(data['name'])
 
     def close(self):
         if self.publisher:
             self.publisher.close()
         if hasattr(self, 'camera_publisher') and self.camera_publisher:
             self.camera_publisher.close()
-        if hasattr(self, 'session_publisher') and self.session_publisher:
-            self.session_publisher.close()
 
     def wait_for_client(self, timeout_s=5):
         tic = time.time()
@@ -295,13 +302,11 @@ class Logger(threading.Thread):
     @staticmethod
     def start_server():
         writer = WebsocketWriter()
-        writer.init()
         return writer
 
     @staticmethod
     def to_file(path, file_size_mb, child=None, compression_level=10):
         writer = FileLoggerWriter(path, file_size_mb, compression_level, child)
-        writer.init()
         return writer
 
     @staticmethod

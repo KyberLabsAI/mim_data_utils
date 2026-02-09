@@ -3,7 +3,6 @@ import threading
 import traceback
 import time
 
-import ormsgpack
 from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
 from kyber_utils.zeromq import (
     ZmqBroker,
@@ -81,9 +80,7 @@ class WebsocketHandlerPubSub(WebsocketHandler):
             traceback.print_exc()
 
 
-if __name__ == "__main__":
-    import math
-
+def run():
     # Start the ZeroMQ broker.
     broker = ZmqBroker()
     broker.start()
@@ -91,9 +88,14 @@ if __name__ == "__main__":
     while not broker.is_running:
         time.sleep(0.01)
 
+    def on_value_update(key, value):
+        if key == 'active_session':
+            print(f"Active session set to: {value}")
+
     value_server = ZmqRemoteKeyValueServer({
-        'websocket_num_clients': 0
-    })
+        'websocket_num_clients': 0,
+        'active_session': None
+    }, on_update=on_value_update)
 
     # Shared Zmq value to keep track of connected websockets.
     WebsocketHandlerPubSub.value_server = value_server
@@ -107,27 +109,14 @@ if __name__ == "__main__":
     static_server = StaticFileServer(directory=_pkg_root, port=8000)
     static_server.start()
 
-    active_session = None
-    active_topic = None
-
-    def on_session(topic, data):
-        nonlocal active_session, active_topic
-        msg = ormsgpack.unpackb(data)
-        name = msg.get('name') or msg.get(b'name')
-        if isinstance(name, bytes):
-            name = name.decode()
-        active_session = name
-        active_topic = f'/timeseries/{name}'.encode()
-        print(f"Active session set to: {active_session}")
-
     def on_camera(topic, data):
         websocket.broadcast(data)
 
     def on_timeseries(topic, data):
-        if active_topic and topic == active_topic:
+        active_session = value_server.get('active_session')
+        if active_session and topic == f'/timeseries/{active_session}'.encode():
             websocket.broadcast(data)
 
-    sub_session = ZmqSubscriber('/session/', callback=on_session)
     sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
     sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
 
@@ -137,6 +126,9 @@ if __name__ == "__main__":
             time.sleep(1.)
     except KeyboardInterrupt:
         print("\nStopped.")
-        sub_session.close()
         sub_camera.close()
         sub_timeseries.close()
+
+
+if __name__ == "__main__":
+    run()
