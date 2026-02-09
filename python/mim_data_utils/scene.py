@@ -16,6 +16,7 @@ def mj2pin(x):
     return res
 
 
+
 class Pose:
     def __init__(self, x, R=None):
         if R is None:
@@ -137,29 +138,32 @@ class Scene:
         self.objs[name]['color'] = color
 
     def update_pos(self, name, x, mujoco=False):
-        # Fast-path
-        if x.shape[0] == 7 and not mujoco:
-            self.objs[name]['pos'][:] = x
-            return
-        elif isinstance(x, Pose):
-            trans = x.trans()
-            quat = x.quat()
-        elif np.all(np.array(x.shape) == np.array([4, 4])):
-            trans = x[:3, 3]
-            quat = Rotation.from_matrix(x[:3, :3]).as_quat()
-        elif x.shape[0] == 7:
-            if mujoco:
-                x = mj2pin(x)
-            trans = x[:3]
-            quat = x[3:]
-        elif x.shape[0] == 6:
-            trans = x[:3]
-            quat = Rotation.from_euler('xyz', x[3:]).as_quat()
-        elif x.shape[0] == 3:
-            trans = x
-            quat = np.array([0, 0, 0, 1])
+        # Duck typing for pose object.
+        if hasattr(x, 'as_state'):
+            state = x.as_state()
+            trans = state[:3]
+            quat = state[3:]
         else:
-            raise RuntimeError("Shape of x not supported")
+            x = np.asarray(x)
+            if x.shape[0] == 7 and not mujoco:
+                self.objs[name]['pos'][:] = x
+                return
+            elif np.all(np.array(x.shape) == np.array([4, 4])):
+                trans = x[:3, 3]
+                quat = Rotation.from_matrix(x[:3, :3]).as_quat()
+            elif x.shape[0] == 7:
+                if mujoco:
+                    x = mj2pin(x)
+                trans = x[:3]
+                quat = x[3:]
+            elif x.shape[0] == 6:
+                trans = x[:3]
+                quat = Rotation.from_euler('xyz', x[3:]).as_quat()
+            elif x.shape[0] == 3:
+                trans = x
+                quat = np.array([0, 0, 0, 1])
+            else:
+                raise RuntimeError("Shape of x not supported")
 
         self.objs[name]['pos'] = np.hstack([trans, quat])
 
