@@ -270,45 +270,6 @@ class VideoStore {
         }
     }
 
-    loadExistingSegments() {
-        return fetch('http://127.0.0.1:8000/recordings/timestamps.json', {signal: this._abortController.signal})
-            .then(r => {
-                if (!r.ok) throw new Error('No timestamps.json found');
-                return r.json();
-            })
-            .then(data => {
-                if (!data.segments) return;
-                // Fetch each segment's JSON to get frame_to_time mapping
-                let promises = data.segments.map((s, i) => {
-                    let jsonFile = s.file.replace('.mp4', '.json');
-                    return fetch(`http://127.0.0.1:8000/recordings/${jsonFile}`, {signal: this._abortController.signal})
-                        .then(r => r.ok ? r.json() : null)
-                        .catch(e => { if (e.name !== 'AbortError') return null; })
-                        .then(segJson => {
-                            if (!segJson) return;
-                            this.onSegmentAvailable({
-                                type: 'video_segment',
-                                name: 'camera',
-                                segment: {
-                                    file: s.file,
-                                    time_start: s.time_start,
-                                    time_end: s.time_end,
-                                    fps: segJson.fps || data.fps,
-                                    frame_offset: segJson.frame_offset || 0,
-                                    frame_to_time: segJson.frame_to_time || null
-                                },
-                                init_file: 'init.mp4',
-                                base_url: 'recordings/'
-                            });
-                        });
-                });
-                return Promise.all(promises);
-            })
-            .catch(e => {
-                if (e.name !== 'AbortError') console.warn('VideoStore: no existing segments', e);
-            });
-    }
-
     clear() {
         // Cancel all in-flight fetches
         this._abortController.abort();

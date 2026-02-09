@@ -1,7 +1,6 @@
 let wsMaxData = 5 * 60 * 1000;
 //let wsMaxData = 1000 * 1000;
 
-let lastTime = 0;
 let _imageAutoOpened = false;
 
 function parseTimeSample(data) {
