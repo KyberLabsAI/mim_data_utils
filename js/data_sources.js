@@ -63,8 +63,15 @@ function parsewebSocketData(data) {
             _imageAutoOpened = true;
             toggleImage();
         }
+        let imgTime = parseFloat(data.time);
+        let wallNow = Date.now() / 1000;
+        let lag = wallNow - imgTime;
+        _imgDebug.imgCount++;
+        _imgDebug.totalLag += lag;
+        _imgDebug.maxLag = Math.max(_imgDebug.maxLag, lag);
+        _imgDebug.lastImgTime = imgTime;
         let cam = getOrCreateCamera(data.name || 'default');
-        cam.addImage(parseFloat(data.time), data.payload);
+        cam.addImage(imgTime, data.payload);
     } else if (data.type == 'video_segment') {
         if (!imageVisible && !_imageAutoOpened) {
             _imageAutoOpened = true;
@@ -116,6 +123,40 @@ let domMessage = document.getElementById('message');
 let packets = 0;
 let datas = 0;
 
+// === Image lag debug stats ===
+let _imgDebug = {
+    lastPrint: performance.now(),
+    imgCount: 0,
+    totalLag: 0,     // sum of (wallclock - image_timestamp) in seconds
+    maxLag: 0,
+    lastImgTime: 0,  // last image timestamp received
+    lastSyncTime: 0, // last absTime passed to syncToTime
+    decodeTotalMs: 0, // time spent in msgpack decode
+};
+
+setInterval(() => {
+    if (_imgDebug.imgCount === 0) return;
+    let now = performance.now();
+    let elapsed = (now - _imgDebug.lastPrint) / 1000;
+    let avgLag = _imgDebug.totalLag / _imgDebug.imgCount;
+    console.log(
+        `[img-debug] ${_imgDebug.imgCount} imgs in ${elapsed.toFixed(1)}s ` +
+        `| avg_lag=${avgLag.toFixed(3)}s max_lag=${_imgDebug.maxLag.toFixed(3)}s ` +
+        `| last_img_t=${_imgDebug.lastImgTime.toFixed(3)} last_sync_t=${_imgDebug.lastSyncTime.toFixed(3)} ` +
+        `| sync_delta=${(_imgDebug.lastSyncTime - _imgDebug.lastImgTime).toFixed(3)}s ` +
+        `| decode_total=${_imgDebug.decodeTotalMs.toFixed(1)}ms ` +
+        `| packets=${packets} items=${datas}`
+    );
+    _imgDebug.imgCount = 0;
+    _imgDebug.totalLag = 0;
+    _imgDebug.maxLag = 0;
+    _imgDebug.decodeTotalMs = 0;
+    _imgDebug.lastPrint = now;
+    packets = 0;
+    datas = 0;
+}, 2000);
+// === End image lag debug stats ===
+
 let ws = null;
 function connectViaWebSocket() {
     ws = new WebSocket("ws://127.0.0.1:5678/");
@@ -131,7 +172,9 @@ function connectViaWebSocket() {
             dataRecord = []
         }
 
+        let _t0 = performance.now();
         let data = MessagePack.decode(new Uint8Array(event.data));
+        _imgDebug.decodeTotalMs += (performance.now() - _t0);
 
         // if (dataRecord.length < 100) {
         //     dataRecord.push(event.data);

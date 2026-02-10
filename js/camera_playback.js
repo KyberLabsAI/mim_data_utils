@@ -63,6 +63,22 @@ class CameraPlayback {
                 this.videoStore.syncToTime(absTime);
             }
         }
+
+        // Debug: log image store status periodically
+        if (!this._debugLastPrint || performance.now() - this._debugLastPrint > 2000) {
+            this._debugLastPrint = performance.now();
+            let store = this.imageStore;
+            let newestImg = store.times.length > 0 ? store.times[store.times.length - 1] : null;
+            let oldestImg = store.times.length > 0 ? store.times[0] : null;
+            let imgGap = newestImg != null ? (absTime - newestImg) : null;
+            console.log(
+                `[sync-debug:${this.name}] absTime=${absTime?.toFixed(3)} ` +
+                `| store: ${store.times.length} frames, ` +
+                `oldest=${oldestImg?.toFixed(3)} newest=${newestImg?.toFixed(3)} ` +
+                `| gap(absTime-newest)=${imgGap?.toFixed(3)}s ` +
+                `| using=${this.videoEl.style.display === '' ? 'video' : 'image'}`
+            );
+        }
     }
 
     loadExistingSegments(baseUrl) {

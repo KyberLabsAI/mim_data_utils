@@ -198,6 +198,11 @@ class WebsocketWriter:
             self.close()
             self.init()
         
+    _log_debug_count = 0
+    _log_debug_img_count = 0
+    _log_debug_last_print = 0
+    _log_debug_max_img_age = 0
+
     def log(self, data):
         if self.publisher is None:
             self.init()
@@ -206,6 +211,25 @@ class WebsocketWriter:
 
         camera_items = [d for d in data if d.get('type') in ('image', 'video_segment')]
         other_items = [d for d in data if d.get('type') not in ('image', 'video_segment')]
+
+        # Debug: track image age at publish time
+        now = time.time()
+        WebsocketWriter._log_debug_count += 1
+        for item in camera_items:
+            if item.get('type') == 'image' and 'time' in item:
+                age = now - item['time']
+                WebsocketWriter._log_debug_img_count += 1
+                WebsocketWriter._log_debug_max_img_age = max(WebsocketWriter._log_debug_max_img_age, age)
+
+        if now - WebsocketWriter._log_debug_last_print >= 2.0 and WebsocketWriter._log_debug_img_count > 0:
+            print(f"[ws-writer] {WebsocketWriter._log_debug_count} batches, "
+                  f"{WebsocketWriter._log_debug_img_count} imgs, "
+                  f"max_img_age={WebsocketWriter._log_debug_max_img_age:.3f}s, "
+                  f"batch_size={len(data)} items ({len(camera_items)} cam, {len(other_items)} other)")
+            WebsocketWriter._log_debug_count = 0
+            WebsocketWriter._log_debug_img_count = 0
+            WebsocketWriter._log_debug_max_img_age = 0
+            WebsocketWriter._log_debug_last_print = now
 
         if camera_items:
             self.camera_publisher.send(ormsgpack.packb(camera_items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
@@ -351,6 +375,8 @@ class Logger(threading.Thread):
             self.flush()
             time.sleep(0.01)
 
+    _flush_debug_last_print = 0
+
     def flush(self):
         # Only send data if there is any.
         item_to_log = []
@@ -358,6 +384,15 @@ class Logger(threading.Thread):
             item_to_log.append(self.log_queue.get())
 
         if len(item_to_log) > 0:
+            now = time.time()
+            img_count = sum(1 for item in item_to_log if item.get('type') == 'image')
+            if now - Logger._flush_debug_last_print >= 2.0 and img_count > 0:
+                # Check age of images in queue
+                img_ages = [now - item['time'] for item in item_to_log if item.get('type') == 'image']
+                print(f"[logger-flush] queue_depth={self.log_queue.qsize()}, "
+                      f"flushing {len(item_to_log)} items ({img_count} imgs), "
+                      f"img_age: avg={sum(img_ages)/len(img_ages):.3f}s max={max(img_ages):.3f}s")
+                Logger._flush_debug_last_print = now
             self._send_data(item_to_log)
 
     def _append_log(self, data):

@@ -2,6 +2,7 @@ import os
 import threading
 import traceback
 import time
+import ormsgpack
 
 from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
 from kyber_utils.zeromq import (
@@ -109,7 +110,31 @@ def run():
     static_server = StaticFileServer(directory=_pkg_root, port=8000)
     static_server.start()
 
+    _camera_debug_count = [0]
+    _camera_debug_frame_count = [0]
+    _camera_debug_last_print = [time.time()]
+
     def on_camera(topic, data):
+        now = time.time()
+        _camera_debug_count[0] += 1
+        # Count individual image items inside the batch
+        try:
+            items = ormsgpack.unpackb(data)
+            n_imgs = sum(1 for item in items if item.get(b'type') == b'image' or item.get('type') == 'image')
+            _camera_debug_frame_count[0] += n_imgs
+        except Exception:
+            pass
+        # Print camera relay stats every 2 seconds
+        elapsed = now - _camera_debug_last_print[0]
+        if elapsed >= 2.0:
+            msg_rate = _camera_debug_count[0] / elapsed
+            frame_rate = _camera_debug_frame_count[0] / elapsed
+            print(f"[camera-relay] {_camera_debug_count[0]} msgs ({msg_rate:.1f}/s), "
+                  f"{_camera_debug_frame_count[0]} frames ({frame_rate:.1f} fps), "
+                  f"payload={len(data)} bytes, clients={websocket.num_clients}")
+            _camera_debug_count[0] = 0
+            _camera_debug_frame_count[0] = 0
+            _camera_debug_last_print[0] = now
         websocket.broadcast(data)
 
     def on_timeseries(topic, data):

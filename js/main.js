@@ -493,6 +493,9 @@ let draw = () => {
 
     if (imageVisible) {
         let absTime = scene.absoluteTime();
+        if (typeof _imgDebug !== 'undefined') {
+            _imgDebug.lastSyncTime = absTime;
+        }
         cameras.forEach(cam => cam.syncToTime(absTime));
     }
 }
