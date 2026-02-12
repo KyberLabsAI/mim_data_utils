@@ -31,6 +31,9 @@ class Pose:
         R = self.R @ other.R
 
         return Pose(t, R)
+    
+    def as_state(self):
+        return np.hstack([self.t, Rotation.from_matrix(self.R).as_quat()])
 
     def trans(self):
         return self.t
