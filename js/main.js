@@ -436,6 +436,13 @@ function toggleScene(state) {
     forcePlotRefresh = true;
 }
 
+function swapSplits() {
+    document.body.classList.toggle('swapped');
+    forcePlotRefresh = true;
+    shouldResize = true;
+    scene.resize();
+}
+
 let imageVisible = false;
 function toggleImage() {
     imageVisible = !imageVisible;

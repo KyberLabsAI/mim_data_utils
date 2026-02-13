@@ -126,6 +126,22 @@
   grid-column: 1 / span 2;
 }
 
+.swapped.showImage .left-div {
+    grid-column: 2 / span 1;
+}
+
+.swapped.showImage .right-div {
+    grid-column: 1 / span 1;
+}
+
+.swapped.showBoth .left-div {
+    grid-column: 2 / span 1;
+}
+
+.swapped.showBoth .right-div {
+    grid-column: 1 / span 1;
+}
+
 .viewer-panel canvas {
     position: absolute;
     bottom: 0;
@@ -172,6 +188,7 @@
         <button onclick="toggleScene()">Toggle Scene</button>
         <button onclick="toggleImage()">Toggle Image</button>
         <button onclick="removeMark()">Remove Mark</button>
+        <button onclick="swapSplits()">Swap Splits</button>
         <button onclick="stepBack()">t--</button>
         <button onclick="stepForward()">t++</button>
 
