@@ -71,7 +71,11 @@ function parsewebSocketData(data) {
         _imgDebug.maxLag = Math.max(_imgDebug.maxLag, lag);
         _imgDebug.lastImgTime = imgTime;
         let cam = getOrCreateCamera(data.name || 'default');
-        cam.addImage(imgTime, data.payload);
+        if (isFrozen && cam.imageStore.times.length >= cam.imageStore.maxFrames) {
+            // Don't evict frozen images — drop the incoming frame instead
+        } else {
+            cam.addImage(imgTime, data.payload);
+        }
     } else if (data.type == 'video_segment') {
         if (!imageVisible && !_imageAutoOpened) {
             _imageAutoOpened = true;

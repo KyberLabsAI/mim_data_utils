@@ -33,7 +33,7 @@ class CameraPlayback {
         }
         if (!inserted) camerasContainer.appendChild(this.container);
 
-        this.imageStore = new ImageStore(20000);
+        this.imageStore = new ImageStore(1000);
         this.videoStore = new VideoStore(this.videoEl, (tStart, tEnd) => {
             this.imageStore.evictRange(tStart, tEnd);
         });

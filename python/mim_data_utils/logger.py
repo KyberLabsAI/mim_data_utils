@@ -373,7 +373,7 @@ class Logger(threading.Thread):
     def run(self):
         while self.keep_running:
             self.flush()
-            time.sleep(0.01)
+            time.sleep(0.001)
 
     _flush_debug_last_print = 0
 
