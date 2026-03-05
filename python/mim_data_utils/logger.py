@@ -182,7 +182,7 @@ class WebsocketWriter:
         assert(self.session_name is not None)
 
         self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
-        self.camera_publisher = ZmqPublisher('/camera/')
+        self.camera_publisher = ZmqPublisher('/camera/', sndhwm=2)
         self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
         if not self.publisher.wait_connected():
