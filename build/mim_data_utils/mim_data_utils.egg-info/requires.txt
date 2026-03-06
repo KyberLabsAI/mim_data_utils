@@ -1,0 +1,6 @@
+setuptools
+SimpleWebSocketServer
+ormsgpack
+zstandard
+meshio
+pyzmq

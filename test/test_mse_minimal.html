@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html><head><title>Minimal MSE Test</title>
+<script src="../lib/msgpack.min.js"></script>
+</head>
+<body>
+<h2>Minimal MSE Test</h2>
+<video id="v" muted playsinline width="640" style="background:#333"></video>
+<pre id="log"></pre>
+<script>
+let logEl = document.getElementById('log');
+function log(msg) { logEl.textContent += msg + '\n'; console.log(msg); }
+
+let video = document.getElementById('v');
+let ms = new MediaSource();
+let sb = null;
+let queue = [];
+let appending = false;
+let initDone = false;
+
+video.src = URL.createObjectURL(ms);
+
+video.addEventListener('error', () => {
+    log('VIDEO ERROR: ' + (video.error ? video.error.message : 'unknown'));
+});
+
+ms.addEventListener('sourceopen', () => {
+    log('MediaSource opened, readyState=' + ms.readyState);
+    // Use a very permissive codec
+    sb = ms.addSourceBuffer('video/mp4; codecs="avc1.640033"');
+    sb.addEventListener('updateend', () => {
+        appending = false;
+        log('updateend - buffered ranges: ' + dumpRanges(sb.buffered) +
+            ', video readyState=' + video.readyState +
+            ', videoWidth=' + video.videoWidth);
+        processQueue();
+    });
+    sb.addEventListener('error', (e) => {
+        log('SOURCEBUFFER ERROR: ' + e);
+    });
+    processQueue();
+});
+
+ms.addEventListener('sourceended', () => log('MediaSource ended'));
+ms.addEventListener('sourceclose', () => log('MediaSource CLOSED, readyState=' + ms.readyState));
+
+function dumpRanges(r) {
+    let s = [];
+    for (let i = 0; i < r.length; i++) s.push(r.start(i).toFixed(2) + '-' + r.end(i).toFixed(2));
+    return '[' + s.join(', ') + ']';
+}
+
+function processQueue() {
+    if (appending || queue.length === 0 || !sb) return;
+    if (sb.updating) return;
+    appending = true;
+    let item = queue.shift();
+    log('Appending ' + item.label + ' (' + item.buf.byteLength + ' bytes), first 8: ' +
+        Array.from(new Uint8Array(item.buf, 0, Math.min(8, item.buf.byteLength))).map(b => b.toString(16).padStart(2,'0')).join(''));
+    try {
+        sb.appendBuffer(item.buf);
+    } catch(e) {
+        log('APPEND THROW: ' + e.message);
+        appending = false;
+    }
+}
+
+function enqueue(buf, label) {
+    queue.push({buf, label});
+    processQueue();
+}
+
+// Also test with raw fetch of the captured file
+let useWS = true;
+
+if (useWS) {
+    log('Connecting to ws://127.0.0.1:5678/ ...');
+    let ws = new WebSocket('ws://127.0.0.1:5678/');
+    ws.binaryType = 'arraybuffer';
+    let fragCount = 0;
+    ws.onmessage = (event) => {
+        let items = MessagePack.decode(new Uint8Array(event.data));
+        for (let data of items) {
+            if (data.type === 'video_init' && !data.name.includes('/longterm')) {
+                let payload = data.payload;
+                let buf = (payload instanceof ArrayBuffer) ? payload
+                    : payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+                log('Got init: ' + buf.byteLength + ' bytes for "' + data.name + '"');
+                enqueue(buf, 'init');
+                initDone = true;
+            } else if (data.type === 'video_fragment' && initDone && fragCount < 20) {
+                fragCount++;
+                let payload = data.payload;
+                let buf = (payload instanceof ArrayBuffer) ? payload
+                    : payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+                if (fragCount <= 5) {
+                    log('Got fragment #' + fragCount + ': ' + buf.byteLength + ' bytes');
+                }
+                enqueue(buf, 'frag#' + fragCount);
+            }
+        }
+    };
+    ws.onerror = () => log('WS error');
+} else {
+    // Test with the captured file
+    log('Fetching /tmp/ws_capture.mp4 ...');
+    // You'd need to serve this file
+}
+</script>
+</body></html>

@@ -1,0 +1,4 @@
+setuptools
+websocket-server
+orjson
+meshio

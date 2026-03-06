@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Video Stream Test</title>
+<style>
+body { font-family: monospace; background: #1a1a1a; color: #eee; margin: 20px; }
+.status { padding: 8px 12px; margin: 4px 0; border-radius: 4px; }
+.pass { background: #1a4a1a; border-left: 4px solid #4caf50; }
+.fail { background: #4a1a1a; border-left: 4px solid #f44336; }
+.wait { background: #4a3a1a; border-left: 4px solid #ff9800; }
+.info { background: #1a2a4a; border-left: 4px solid #2196f3; }
+video { max-width: 640px; display: block; margin: 10px 0; background: #333; }
+h2 { margin-top: 20px; }
+#summary { font-size: 18px; padding: 12px; margin-top: 20px; border-radius: 4px; }
+</style>
+<script src="../lib/msgpack.min.js"></script>
+</head>
+<body>
+<h1>Video Stream Diagnostic Test</h1>
+<p>Connect to ws://127.0.0.1:5678 and verify video_init + video_fragment messages produce playable video.</p>
+<div id="log"></div>
+<h2>Realtime Video</h2>
+<video id="rtVideo" muted playsinline></video>
+<h2>Long-term Video</h2>
+<video id="ltVideo" muted playsinline></video>
+<div id="summary"></div>
+
+<script>
+let log = document.getElementById('log');
+let summaryEl = document.getElementById('summary');
+
+let checks = {
+    ws_connected: false,
+    any_data: false,
+    video_init_received: false,
+    video_fragment_received: false,
+    rt_mse_open: false,
+    rt_init_appended: false,
+    rt_fragment_appended: false,
+    rt_video_has_frames: false,
+};
+
+function addLog(msg, cls) {
+    let div = document.createElement('div');
+    div.className = 'status ' + cls;
+    div.textContent = `[${new Date().toISOString().slice(11,23)}] ${msg}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+function setCheck(name, msg) {
+    if (!checks[name]) {
+        checks[name] = true;
+        addLog(`PASS: ${msg || name}`, 'pass');
+        updateSummary();
+    }
+}
+
+function updateSummary() {
+    let total = Object.keys(checks).length;
+    let passed = Object.values(checks).filter(v => v).length;
+    summaryEl.textContent = `${passed}/${total} checks passed`;
+    summaryEl.className = passed === total ? 'pass' : 'wait';
+}
+
+// --- MSE setup for realtime video ---
+let rtVideo = document.getElementById('rtVideo');
+let rtMediaSource = new MediaSource();
+let rtSourceBuffer = null;
+let rtQueue = [];
+let rtAppending = false;
+let rtInitLoaded = false;
+
+rtVideo.src = URL.createObjectURL(rtMediaSource);
+
+rtMediaSource.addEventListener('sourceopen', () => {
+    setCheck('rt_mse_open', 'MediaSource opened for realtime video');
+    rtSourceBuffer = rtMediaSource.addSourceBuffer('video/mp4; codecs="avc1.640033"');
+    rtSourceBuffer.addEventListener('updateend', () => {
+        rtAppending = false;
+        processRtQueue();
+    });
+    rtSourceBuffer.addEventListener('error', (e) => {
+        addLog(`SourceBuffer error: ${e}`, 'fail');
+    });
+});
+
+function processRtQueue() {
+    if (rtAppending || rtQueue.length === 0 || !rtSourceBuffer) return;
+    if (rtSourceBuffer.updating) return;
+    rtAppending = true;
+    let item = rtQueue.shift();
+    try {
+        rtSourceBuffer.appendBuffer(item.buf);
+        if (item.type === 'init') {
+            setCheck('rt_init_appended', 'Init segment appended to SourceBuffer');
+        } else {
+            setCheck('rt_fragment_appended', 'Fragment appended to SourceBuffer');
+        }
+    } catch (e) {
+        addLog(`appendBuffer error: ${e.message}`, 'fail');
+        rtAppending = false;
+    }
+}
+
+function appendToRt(buf, type) {
+    rtQueue.push({buf, type});
+    processRtQueue();
+}
+
+// Check for decoded frames periodically
+setInterval(() => {
+    if (rtVideo.videoWidth > 0 && rtVideo.videoHeight > 0) {
+        setCheck('rt_video_has_frames', `Video decoded: ${rtVideo.videoWidth}x${rtVideo.videoHeight}`);
+    }
+}, 500);
+
+// --- WebSocket ---
+addLog('Connecting to ws://127.0.0.1:5678 ...', 'wait');
+
+let ws = new WebSocket('ws://127.0.0.1:5678/');
+ws.binaryType = 'arraybuffer';
+
+ws.onopen = () => {
+    setCheck('ws_connected', 'WebSocket connected');
+};
+
+ws.onerror = (e) => {
+    addLog('WebSocket error - is the mim_data_utils server running?', 'fail');
+};
+
+ws.onclose = () => {
+    addLog('WebSocket closed', 'info');
+};
+
+let fragmentCount = 0;
+let initCount = 0;
+
+ws.onmessage = (event) => {
+    setCheck('any_data', 'Received data from WebSocket');
+
+    let items = MessagePack.decode(new Uint8Array(event.data));
+    for (let data of items) {
+        if (data.type === 'video_init') {
+            initCount++;
+            setCheck('video_init_received', `video_init for "${data.name}" (${data.payload.length} bytes)`);
+
+            // Properly slice buffer from msgpack view
+            let payload = data.payload;
+            let buf = (payload instanceof ArrayBuffer) ? payload
+                : payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+
+            addLog(`Init segment: ${buf.byteLength} bytes for "${data.name}"`, 'info');
+            appendToRt(buf, 'init');
+
+        } else if (data.type === 'video_fragment') {
+            fragmentCount++;
+            setCheck('video_fragment_received',
+                `video_fragment for "${data.name}" (${data.payload.length} bytes, ` +
+                `fps=${data.fps}, offset=${data.frame_offset}, ` +
+                `frame_to_time=[${(data.frame_to_time||[]).length} entries])`);
+
+            let payload = data.payload;
+            let buf = (payload instanceof ArrayBuffer) ? payload
+                : payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+
+            appendToRt(buf, 'fragment');
+
+            if (fragmentCount % 10 === 0) {
+                addLog(`Fragments received: ${fragmentCount}, buffer: ${rtSourceBuffer ? rtSourceBuffer.buffered.length : 0} ranges`, 'info');
+            }
+
+        } else if (data.type === 'video_segment') {
+            addLog(`video_segment for "${data.name}" (time: ${data.segment?.time_start?.toFixed(1)}-${data.segment?.time_end?.toFixed(1)})`, 'info');
+
+        } else if (data.type === 'image') {
+            // skip
+        } else {
+            addLog(`Other: type=${data.type}`, 'info');
+        }
+    }
+};
+
+updateSummary();
+addLog('Waiting for video data... Start the USB camera publisher with enable_logging:=true', 'wait');
+</script>
+</body>
+</html>

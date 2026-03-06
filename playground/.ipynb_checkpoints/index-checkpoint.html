@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MessagePack Binary Decoder</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load MessagePack Library (using the @msgpack/msgpack UMD build from CDN) -->
+    <script src="msgpack.min.js"></script>
+    <style>
+        /* Custom scrollbar for better aesthetics */
+        body::-webkit-scrollbar { width: 8px; }
+        body::-webkit-scrollbar-thumb { background-color: #6366f1; border-radius: 4px; }
+        body::-webkit-scrollbar-track { background-color: #1f2937; }
+        
+        /* Ensure image fits nicely in the container */
+        #output-image {
+            max-width: 100%;
+            height: auto;
+            border-radius: 0.5rem;
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease;
+        }
+        #output-image:hover {
+            transform: scale(1.02);
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-4 sm:p-8 font-sans flex flex-col items-center">
+
+    <div class="max-w-4xl w-full bg-gray-800 p-6 sm:p-10 rounded-xl shadow-2xl space-y-8">
+        <h1 class="text-3xl sm:text-4xl font-extrabold text-indigo-400 text-center">
+            MessagePack JPEG Decoder
+        </h1>
+        <p class="text-gray-400 text-center">
+            Simulating receiving a binary MessagePack payload from the server and extracting the JPEG for display.
+        </p>
+
+        <div class="flex flex-col sm:flex-row gap-4">
+            <!-- Decode Button -->
+            <button id="decodeButton" 
+                    class="w-full sm:w-1/2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-6 rounded-lg transition duration-200 shadow-md transform hover:scale-[1.01]">
+                Decode MessagePack & Display Image
+            </button>
+            
+            <!-- Clear Button -->
+            <button id="clearButton" 
+                    class="w-full sm:w-1/2 bg-gray-600 hover:bg-gray-500 text-white font-bold py-3 px-6 rounded-lg transition duration-200 shadow-md transform hover:scale-[1.01]">
+                Clear Output
+            </button>
+        </div>
+
+
+        <!-- Image Output Area -->
+        <div id="imageContainer" class="mt-8 pt-6 border-t border-gray-700">
+            <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Decoded Image:</h2>
+            <div class="flex justify-center items-center bg-gray-700 rounded-xl p-4 min-h-[300px]">
+                <img id="output-image" 
+                     src="" 
+                     alt="Decoded JPEG Image (Placeholder will show if image is invalid)"
+                     class="hidden">
+                <p id="message" class="text-gray-400">Click "Decode MessagePack" to load the mock image.</p>
+            </div>
+            
+            <div id="statusLog" class="mt-6 p-4 bg-gray-700 rounded-lg text-sm font-mono whitespace-pre-wrap text-green-400 hidden">
+                <!-- Status messages will appear here -->
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>

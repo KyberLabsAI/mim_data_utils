@@ -1,0 +1,22 @@
+[0.834s] Invoking command in '/home/kyber/dev/mim_data_utils/build/mim_data_utils': CONDA_PROMPT_MODIFIER=(base) DEBUGINFOD_URLS=https://debuginfod.ubuntu.com PYTHONPATH=/home/kyber/dev/mim_data_utils/build/mim_data_utils/prefix_override:/home/kyber/miniconda3/lib/python3.12/site-packages/colcon_core/task/python/colcon_distutils_commands:/home/kyber/dev/mim_data_utils/install/mim_data_utils/lib/python3.12/site-packages:${PYTHONPATH} /home/kyber/miniconda3/bin/python -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/kyber/dev/mim_data_utils/build/mim_data_utils/build --no-deps symlink_data
+[1.315s] running develop
+[1.609s] running egg_info
+[1.609s] creating mim_data_utils.egg-info
+[1.643s] writing mim_data_utils.egg-info/PKG-INFO
+[1.643s] writing dependency_links to mim_data_utils.egg-info/dependency_links.txt
+[1.644s] writing requirements to mim_data_utils.egg-info/requires.txt
+[1.644s] writing top-level names to mim_data_utils.egg-info/top_level.txt
+[1.644s] writing manifest file 'mim_data_utils.egg-info/SOURCES.txt'
+[1.712s] reading manifest file 'mim_data_utils.egg-info/SOURCES.txt'
+[1.713s] writing manifest file 'mim_data_utils.egg-info/SOURCES.txt'
+[1.750s] running build_ext
+[1.750s] Creating /home/kyber/dev/mim_data_utils/install/mim_data_utils/lib/python3.12/site-packages/mim-data-utils.egg-link (link to .)
+[1.751s] 
+[1.751s] Installed /home/kyber/dev/mim_data_utils/build/mim_data_utils
+[1.752s] running symlink_data
+[1.752s] creating /home/kyber/dev/mim_data_utils/install/mim_data_utils/share/ament_index
+[1.752s] creating /home/kyber/dev/mim_data_utils/install/mim_data_utils/share/ament_index/resource_index
+[1.752s] creating /home/kyber/dev/mim_data_utils/install/mim_data_utils/share/ament_index/resource_index/packages
+[1.752s] symbolically linking /home/kyber/dev/mim_data_utils/build/mim_data_utils/resource/mim_data_utils -> /home/kyber/dev/mim_data_utils/install/mim_data_utils/share/ament_index/resource_index/packages
+[1.752s] symbolically linking /home/kyber/dev/mim_data_utils/build/mim_data_utils/package.xml -> /home/kyber/dev/mim_data_utils/install/mim_data_utils/share/mim_data_utils
+[1.820s] Invoked command in '/home/kyber/dev/mim_data_utils/build/mim_data_utils' returned '0': CONDA_PROMPT_MODIFIER=(base) DEBUGINFOD_URLS=https://debuginfod.ubuntu.com PYTHONPATH=/home/kyber/dev/mim_data_utils/build/mim_data_utils/prefix_override:/home/kyber/miniconda3/lib/python3.12/site-packages/colcon_core/task/python/colcon_distutils_commands:/home/kyber/dev/mim_data_utils/install/mim_data_utils/lib/python3.12/site-packages:${PYTHONPATH} /home/kyber/miniconda3/bin/python -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/kyber/dev/mim_data_utils/build/mim_data_utils/build --no-deps symlink_data
