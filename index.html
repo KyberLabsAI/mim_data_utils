@@ -19,8 +19,9 @@
     bottom: 0;
     left: 0;
     right: 0;
-    grid-template-columns: 50% 50%;
+    grid-template-columns: 1fr 1fr;
     grid-template-rows: min-content 1fr;
+    overflow: hidden;
 }
 
 .top {
@@ -36,6 +37,7 @@
     grid-column: 1 / span 2;
     grid-row: 2 / 2;
     overflow-y: auto;
+    min-width: 0;
 }
 
 .right-div {
@@ -44,6 +46,7 @@
     position: relative;
     display: flex;
     flex-direction: column;
+    min-width: 0;
 }
 
 .cameras-container {
