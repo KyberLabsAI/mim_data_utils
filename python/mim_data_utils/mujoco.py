@@ -11,11 +11,17 @@ from .scene import Pose
 
 
 class MujocoMesh(RawMesh):
-    def __init__(self, model, mesh_obj):
+    def __init__(self, model, mesh_obj, rgba=None):
         vertices = model.mesh_vert[mesh_obj.vertadr[0]:mesh_obj.vertadr[0] + mesh_obj.vertnum[0]]
         indices = model.mesh_face[mesh_obj.faceadr[0]:mesh_obj.faceadr[0] + mesh_obj.facenum[0]]
 
-        super().__init__(vertices, indices, [1, 1, 1], {})
+        material = {}
+        if rgba is not None:
+            # Convert 0-1 float RGBA to 0-255 int for the JS frontend.
+            color_255 = (np.clip(rgba, 0, 1) * 255).astype(int).tolist()
+            material['color'] = color_255
+
+        super().__init__(vertices, indices, [1, 1, 1], material)
 
 
 class MujocoVisualizer:
@@ -47,7 +53,7 @@ class MujocoVisualizer:
             if g.dataid < 0:
                 continue
 
-            mesh = MujocoMesh(model, model.mesh(g.dataid[0]))
+            mesh = MujocoMesh(model, model.mesh(g.dataid[0]), rgba=g.rgba)
 
             # Store the transfrom from the body to geom on the mesh for later.
             mesh.offset = Pose(mj2pin(np.hstack([g.pos, g.quat])))
