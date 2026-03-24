@@ -149,14 +149,15 @@ class Scene3D {
     initScene() {
         // Scene
         const scene = this.scene = new THREE.Scene();
-        scene.background = new THREE.Color(0xaaaaaa); // Light gray background
+        scene.background = new THREE.Color(0x1a1a2e); // Dark navy/charcoal
 
         // Renderer
         const renderer = this.renderer = new THREE.WebGLRenderer({
             antialias: true
         });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true; // Enable shadows
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         renderer.xr.enabled = true;
         renderer.xr.setReferenceSpaceType('local');
         renderer.setAnimationLoop(this.render.bind(this));
@@ -193,38 +194,53 @@ class Scene3D {
         // Start with a single view on the scene.
         this.addViewer(window.innerWidth / window.innerHeight);
 
-        // Light
-        const ambientLight = new THREE.AmbientLight(0x404040, 3.); // Soft white light
+        // Lighting: SolidWorks-style three-light setup
+
+        // 1. HemisphereLight (ambient gradient)
+        const hemiLight = new THREE.HemisphereLight(0xddeeff, 0x1a1a2e, 3.5);
+        scene.add(hemiLight);
+
+        // 2. AmbientLight (baseline fill)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.15);
         scene.add(ambientLight);
 
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 3.); // White directional light
-        directionalLight.position.set(.03, .03, .03).normalize(); // From top right
-        directionalLight.castShadow = true; // Cast shadows
-        scene.add(directionalLight);
-        this.directionalLight = directionalLight
+        // 3. DirectionalLight (camera-relative headlight)
+        const headlight = this.headlight = new THREE.DirectionalLight(0xffffff, 0.85);
+        headlight.castShadow = true;
+        scene.add(headlight);
+        scene.add(headlight.target);
 
-
-        // Set up shadow properties for the light (important!)
-        directionalLight.shadow.mapSize.width = 4096;  // Adjust for shadow quality
-        directionalLight.shadow.mapSize.height = 4096;
-        directionalLight.shadow.camera.near = 0.01;    // Adjust near/far for shadow rendering
-        directionalLight.shadow.camera.far = 2;
-
-        let shadowSize = 1.2
-        directionalLight.shadow.camera.left = -shadowSize;
-        directionalLight.shadow.camera.right = shadowSize;
-        directionalLight.shadow.camera.bottom = -shadowSize;
-        directionalLight.shadow.camera.top = shadowSize;
-        // Optional: visualize the shadow camera frustum (for debugging)
-        // const helper = new THREE.CameraHelper( directionalLight.shadow.camera );
-        // scene.add( helper );
+        // Shadow configuration
+        headlight.shadow.mapSize.width = 2048;
+        headlight.shadow.mapSize.height = 2048;
+        headlight.shadow.camera.near = 0.5;
+        headlight.shadow.camera.far = 100;
+        headlight.shadow.camera.left = -20;
+        headlight.shadow.camera.right = 20;
+        headlight.shadow.camera.bottom = -20;
+        headlight.shadow.camera.top = 20;
+        headlight.shadow.bias = -0.001;
 
         this.container.appendChild(renderer.domElement);
 
-        // const cameraHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
+        // const cameraHelper = new THREE.CameraHelper(headlight.shadow.camera);
         // scene.add(cameraHelper); // Helpful for visualizing
 
         this.resize();
+    }
+
+    _updateHeadlight() {
+        if (this.viewers.length === 0) return;
+
+        const viewer = this.viewers[0];
+        const camera = viewer.camera;
+        const target = viewer.controls.target;
+
+        // Compute light position: 5 units above and 3 units to the right in camera-local coords
+        const offset = new THREE.Vector3(3, 5, 0);
+        offset.applyQuaternion(camera.quaternion);
+        this.headlight.position.copy(camera.position).add(offset);
+        this.headlight.target.position.copy(target);
     }
 
     _getViewerIndexAt(x, y) {
@@ -394,6 +410,8 @@ class Scene3D {
         if (xrFrame) {
             this.xrHandleController(renderTime, xrFrame);
         }
+
+        this._updateHeadlight();
 
         this.viewers.forEach((viewer, i) => {
             viewer.updateControls();
