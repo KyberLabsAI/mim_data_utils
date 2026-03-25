@@ -380,8 +380,11 @@ class Logger(threading.Thread):
     def flush(self):
         # Only send data if there is any.
         item_to_log = []
-        while not self.log_queue.empty():
-            item_to_log.append(self.log_queue.get())
+        while True:
+            try:
+                item_to_log.append(self.log_queue.get_nowait())
+            except queue.Empty:
+                break
 
         if len(item_to_log) > 0:
             now = time.time()
