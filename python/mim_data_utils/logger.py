@@ -503,3 +503,10 @@ class Logger(threading.Thread):
             'base_url': base_url
         })
 
+    def log_marker(self, time_s, label, show_summary=False):
+        self._append_log({
+            'type': 'marker',
+            'time': time_s,
+            'label': str(label),
+            'show_summary': bool(show_summary),
+        })

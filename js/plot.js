@@ -52,6 +52,7 @@ class Plot {
         dom.style.position = 'relative';
         dom.style.width = `${width}px`;
         dom.style.height = `${height}px`;
+        dom.style.marginBottom = '6px';
     }
 
     updateSize(width, height) {
@@ -138,13 +139,17 @@ class Plot {
 
     draw(time, xlim, refreshPlots, axesOnly, marks) {
         let verticalLines = [new VerticalLine(time, 'orange')];
+        let legendLines = [new VerticalLine(time, 'orange')];
         marks.withinXLim(xlim).forEach(mark => {
             verticalLines.push(new VerticalLine(mark.time, 'red', mark.label));
+            if (mark.showSummary) {
+                legendLines.push(new VerticalLine(mark.time, 'red', mark.label));
+            }
         });
 
         this.axesDrawer.draw(verticalLines);
 
-        this.updateLegendValues(verticalLines);
+        this.updateLegendValues(legendLines);
 
         if (axesOnly) {
             return

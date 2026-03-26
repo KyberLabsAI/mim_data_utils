@@ -23,6 +23,7 @@ function clearAllCameras() {
 let marks = new Marks();
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
+let panelRootDom = document.getElementById('panelRoot');
 let addOptions = document.getElementById('addOptions');
 
 let forcePlotRefresh = true;
@@ -32,6 +33,19 @@ layoutDom.value = localStorage.getItem('layout') || "trig[0],trig[1];trig[:2]";
 let scene = new Scene3D(document.getElementById('viewer'));
 let plane = new Plane3D('plane')
 scene.addObject(plane)
+
+const PANEL_LAYOUT_STORAGE_KEY = 'panelLayout';
+const DEFAULT_PANEL_LAYOUT = 't|3d/img';
+
+let imageVisible = false;
+let panelLayoutValue = DEFAULT_PANEL_LAYOUT;
+let panelVisible = new Set();
+
+const panelNodes = {
+    t: domPlots,
+    '3d': document.getElementById('viewer'),
+    img: camerasContainer,
+};
 
 
 function arrEqual(a, b) {
@@ -64,6 +78,210 @@ function isZeroNegative(val) {
     let isZero = val === 0;
     isNegative = 1 / val === -Infinity;
     return isZero && isNegative;
+}
+
+function panelNodeVisibleMode(panelId) {
+    return panelId === 'img' ? 'flex' : 'block';
+}
+
+function tokenizePanelLayout(value) {
+    let tokens = [];
+    let compact = value.replaceAll(' ', '');
+    let idx = 0;
+    let squareDepth = 0;
+
+    while (idx < compact.length) {
+        let c = compact[idx];
+
+        if ('|/()'.includes(c)) {
+            tokens.push(c);
+            idx += 1;
+            continue;
+        }
+
+        if (c === '[' || c === ']') {
+            if (c === '[') {
+                squareDepth += 1;
+            } else {
+                squareDepth -= 1;
+                if (squareDepth < 0) {
+                    throw new Error("Unexpected closing ']'");
+                }
+            }
+            idx += 1;
+            continue;
+        }
+
+        if (!(/[a-zA-Z0-9]/.test(c))) {
+            throw new Error(`Unexpected token '${c}'`);
+        }
+
+        let start = idx;
+        while (idx < compact.length && /[a-zA-Z0-9]/.test(compact[idx])) {
+            idx += 1;
+        }
+        tokens.push(compact.slice(start, idx));
+    }
+
+    if (squareDepth !== 0) {
+        throw new Error("Missing closing ']'");
+    }
+
+    return tokens;
+}
+
+function parsePanelLayout(value) {
+    let tokens = tokenizePanelLayout(value);
+    if (tokens.length === 0) {
+        throw new Error('Layout is empty');
+    }
+
+    let idx = 0;
+
+    let parsePrimary = () => {
+        if (idx >= tokens.length) {
+            throw new Error('Unexpected end of layout');
+        }
+
+        let token = tokens[idx++];
+        if (token === '(') {
+            let nested = parseExpression();
+            if (idx >= tokens.length || tokens[idx] !== ')') {
+                throw new Error("Missing closing ')'");
+            }
+            idx += 1;
+            return nested;
+        }
+
+        if (token === ')' || token === '|' || token === '/') {
+            throw new Error(`Unexpected token '${token}'`);
+        }
+
+        return {type: 'panel', id: token};
+    };
+
+    let parseExpression = () => {
+        let left = parsePrimary();
+
+        while (idx < tokens.length && (tokens[idx] === '|' || tokens[idx] === '/')) {
+            let op = tokens[idx++];
+            let right = parsePrimary();
+            left = {type: 'split', op: op, left: left, right: right};
+        }
+
+        return left;
+    };
+
+    let ast = parseExpression();
+    if (idx !== tokens.length) {
+        throw new Error(`Unexpected trailing token '${tokens[idx]}'`);
+    }
+
+    return ast;
+}
+
+function collectPanelIds(ast, out = []) {
+    if (ast.type === 'panel') {
+        out.push(ast.id);
+        return out;
+    }
+    collectPanelIds(ast.left, out);
+    collectPanelIds(ast.right, out);
+    return out;
+}
+
+function validatePanelLayoutAst(ast) {
+    let valid = new Set(['t', '3d', 'img']);
+    let seen = new Set();
+    let ids = collectPanelIds(ast);
+
+    ids.forEach(id => {
+        if (!valid.has(id)) {
+            throw new Error(`Unknown panel '${id}'. Valid: t, 3d, img`);
+        }
+        if (seen.has(id)) {
+            throw new Error(`Panel '${id}' is duplicated`);
+        }
+        seen.add(id);
+    });
+
+    if (seen.size === 0) {
+        throw new Error('At least one panel is required');
+    }
+}
+
+function layoutAstToString(ast) {
+    if (ast.type === 'panel') {
+        return ast.id;
+    }
+    return `(${layoutAstToString(ast.left)}${ast.op}${layoutAstToString(ast.right)})`;
+}
+
+function buildPanelDom(ast) {
+    if (ast.type === 'panel') {
+        let wrapper = document.createElement('div');
+        wrapper.className = 'panel-leaf';
+        let panelNode = panelNodes[ast.id];
+        panelNode.style.display = panelNodeVisibleMode(ast.id);
+        wrapper.appendChild(panelNode);
+        panelVisible.add(ast.id);
+        return wrapper;
+    }
+
+    let split = document.createElement('div');
+    let orientation = ast.op === '|' ? 'row' : 'column';
+    split.className = `panel-split ${orientation}`;
+    split.appendChild(buildPanelDom(ast.left));
+    split.appendChild(buildPanelDom(ast.right));
+    return split;
+}
+
+function applyPanelLayout(layoutText, persist = true) {
+    let ast = parsePanelLayout(layoutText);
+    validatePanelLayoutAst(ast);
+
+    panelVisible = new Set();
+    panelRootDom.innerHTML = '';
+
+    Object.entries(panelNodes).forEach(([panelId, panelNode]) => {
+        panelNode.style.display = 'none';
+        // Ensure the node can be cleanly re-attached.
+        if (panelNode.parentElement && panelNode.parentElement !== panelRootDom) {
+            panelNode.parentElement.removeChild(panelNode);
+        }
+    });
+
+    panelRootDom.appendChild(buildPanelDom(ast));
+
+    imageVisible = panelVisible.has('img');
+    panelLayoutValue = layoutAstToString(ast);
+
+    if (persist) {
+        localStorage.setItem(PANEL_LAYOUT_STORAGE_KEY, panelLayoutValue);
+    }
+
+    shouldResize = true;
+    forcePlotRefresh = true;
+}
+
+function setPanelLayoutPrompt() {
+    let description = [
+        'Available panels: t, 3d, img',
+        'Operators: "|" horizontal, "/" vertical',
+        'Use parentheses for grouping.',
+        'Examples: t|3d/img, t|(3d/img), (t|img)/3d',
+    ].join('\n');
+
+    let entered = prompt(`${description}\n\nEnter panel layout:`, panelLayoutValue);
+    if (entered === null) {
+        return;
+    }
+
+    try {
+        applyPanelLayout(entered, true);
+    } catch (err) {
+        alert(`Invalid layout: ${err.message}`);
+    }
 }
 
 function getXLim() {
@@ -397,60 +615,10 @@ window.addEventListener('keydown', evt => {
     }
 })
 
-const VIEW_STATE_SCENE_ONLY = 2;
-var viewSceneState = 0;
-
-function isSceneDisplayed() {
-    return viewSceneState % 3 > 0;
-}
-
 function isPlotDisplayed() {
-    return viewSceneState % 3 < 2;
+    return panelVisible.has('t');
 }
 
-function toggleScene(state) {
-    if (state === undefined) {
-        viewSceneState++;
-    } else {
-        if (viewSceneState == state) {
-            return;
-        }
-        viewSceneState = state;
-    }
-
-    let showBoth = false;
-    let showSceneOnly = false;
-
-    if (viewSceneState % 3 == 1) {
-        showBoth = true;
-    } else if (viewSceneState % 3 == VIEW_STATE_SCENE_ONLY) {
-        showSceneOnly = true
-    }
-
-    document.body.classList.toggle('showBoth', showBoth);
-    document.body.classList.toggle('showSceneOnly', showSceneOnly);
-
-    forcePlotRefresh = true;
-    scene.resize();
-    shouldResize = true;
-    forcePlotRefresh = true;
-}
-
-function swapSplits() {
-    document.body.classList.toggle('swapped');
-    forcePlotRefresh = true;
-    shouldResize = true;
-    scene.resize();
-}
-
-let imageVisible = false;
-function toggleImage() {
-    imageVisible = !imageVisible;
-    document.body.classList.toggle('showImage', imageVisible);
-    forcePlotRefresh = true;
-    shouldResize = true;
-    scene.resize();
-}
 
 var isFrozen = false;
 function freeze(newValue) {
@@ -482,6 +650,7 @@ let draw = () => {
         shouldResize = false;
         let width = domPlots.clientWidth;
         plots.forEach(p => p.updateSize(width, 300));
+        scene.resize();
         forcePlotRefresh = true;
     }
 
@@ -550,6 +719,14 @@ if (window.location.hash == '#example-data') {
     addSampleData(false);
 }
 
+try {
+    let savedPanelLayout = localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY) || DEFAULT_PANEL_LAYOUT;
+    applyPanelLayout(savedPanelLayout, false);
+} catch (err) {
+    console.warn('Invalid saved panel layout, using default:', err);
+    applyPanelLayout(DEFAULT_PANEL_LAYOUT, true);
+}
+
 firstNewData();
 draw();
 
@@ -606,9 +783,6 @@ function loadAllCameraSegments() {
                 let cam = getOrCreateCamera(name);
                 cam.loadExistingSegments(`recordings/${name}/`);
             });
-            if (data.cameras && data.cameras.length > 0 && !imageVisible) {
-                toggleImage();
-            }
         })
         .catch(() => {
             // Fallback: try old single-camera layout at recordings/timestamps.json
@@ -616,12 +790,7 @@ function loadAllCameraSegments() {
                 .then(r => {
                     if (!r.ok) throw new Error('No timestamps.json');
                     let cam = getOrCreateCamera('camera');
-                    cam.loadExistingSegments('recordings/')
-                        .then(() => {
-                            if (cam.videoStore.segments.length > 0 && !imageVisible) {
-                                toggleImage();
-                            }
-                        });
+                    cam.loadExistingSegments('recordings/');
                 })
                 .catch(() => {});
         });

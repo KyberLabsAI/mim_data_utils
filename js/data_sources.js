@@ -1,8 +1,6 @@
 let wsMaxData = 5 * 60 * 1000;
 //let wsMaxData = 1000 * 1000;
 
-let _imageAutoOpened = false;
-
 function parseTimeSample(data) {
     let t = parseFloat(data.time);
 
@@ -59,10 +57,6 @@ function parsewebSocketData(data) {
             relayout = parseTimeSample(data)
         }
     } else if (data.type == 'image') {
-        if (!imageVisible && !_imageAutoOpened) {
-            _imageAutoOpened = true;
-            toggleImage();
-        }
         let imgTime = parseFloat(data.time);
         let wallNow = Date.now() / 1000;
         let lag = wallNow - imgTime;
@@ -77,12 +71,12 @@ function parsewebSocketData(data) {
             cam.addImage(imgTime, data.payload);
         }
     } else if (data.type == 'video_segment') {
-        if (!imageVisible && !_imageAutoOpened) {
-            _imageAutoOpened = true;
-            toggleImage();
-        }
         let cam = getOrCreateCamera(data.name || 'default');
         cam.addVideoSegment(data);
+    } else if (data.type == 'marker') {
+        let markerTime = parseFloat(data.time);
+        let showSummary = data.show_summary === true;
+        marks.addMarkWithLabel(data.label, markerTime, showSummary);
     } else if (data.type == 'command') {
         let payload = data.payload;
         switch (data.name) {
@@ -91,9 +85,9 @@ function parsewebSocketData(data) {
                 scene.clear();
                 traces.clear(wsMaxData);
                 clearAllCameras();
+                marks.clearMarks();
                 updateLayout(); // Redo layout as data was cleared.
                 freeZoom();
-                toggleScene(false);
                 relayout = true;
                 break;
 

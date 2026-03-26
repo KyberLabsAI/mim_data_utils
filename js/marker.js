@@ -21,17 +21,22 @@ class Mark {
     /**
      * @param {string} label - The label for the mark (e.g., '1', '2', '3').
      * @param {number} time - The time value associated with the mark.
+     * @param {boolean} showSummary - Whether this marker appears in the legend summary table.
      */
-    constructor(label, time) {
+    constructor(label, time, showSummary = true) {
       if (typeof label !== 'string' || label.trim() === '') {
         throw new Error('Mark label must be a non-empty string.');
       }
       if (typeof time !== 'number' || isNaN(time)) {
         throw new Error('Mark time must be a number.');
       }
+      if (typeof showSummary !== 'boolean') {
+        throw new Error('Mark showSummary must be a boolean.');
+      }
 
       this.label = label;
       this.time = time;
+      this.showSummary = showSummary;
     }
 
     /**
@@ -39,7 +44,7 @@ class Mark {
      * @returns {string}
      */
     toString() {
-      return `Mark(label: '${this.label}', time: ${this.time})`;
+      return `Mark(label: '${this.label}', time: ${this.time}, showSummary: ${this.showSummary})`;
     }
   }
 
@@ -68,9 +73,15 @@ class Marks {
      */
     addMark(time) {
       const label = numberToUpperCaseLetterString(this.markCounter);
-      const newMark = new Mark(label, time); // Create an instance of the Mark class
+      const newMark = new Mark(label, time, true); // Create an instance of the Mark class
       this.markers.push(newMark);
       this.markCounter++;
+      return newMark;
+    }
+
+    addMarkWithLabel(label, time, showSummary = true) {
+      const newMark = new Mark(label, time, showSummary);
+      this.markers.push(newMark);
       return newMark;
     }
 

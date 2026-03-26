@@ -171,11 +171,15 @@ class Scene3D {
         });
 
         if (hasXR) {
-            document.body.appendChild(VRButton.createButton(renderer));
+            navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+                if (supported) {
+                    document.body.appendChild(VRButton.createButton(renderer));
+                }
+            });
 
             renderer.xr.addEventListener('sessionstart', () => {
-                // Hide the plot in VR.
-                toggleScene(VIEW_STATE_SCENE_ONLY);
+                // Switch to 3d-only layout for VR.
+                applyPanelLayout('3d', true);
 
                 // Update the VR headset position to match the camera.
                 let cameraPos = this.lastRenderCameraPose.position;
@@ -510,12 +514,6 @@ function addUpdateObject(data) {
 
     parseMaterialColor(data.material.color || 'dddddd', data.material)
     scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
-
-
-    // HACK: If a new object is added and scene is not visible, make it visible.
-    if (!isSceneDisplayed()) {
-        toggleScene(1);
-    }
 }
 
 function event3DCallback(type, evt, data) {

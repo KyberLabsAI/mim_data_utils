@@ -34,25 +34,53 @@
 }
 
 .left-div {
-    grid-column: 1 / span 2;
-    grid-row: 2 / 2;
-    overflow-y: auto;
+    flex: 1;
+    overflow: auto;
     min-width: 0;
+    min-height: 0;
 }
 
-.right-div {
-    grid-column: 2 / span 0;
+.panel-root {
+    grid-column: 1 / span 2;
     grid-row: 2 / 2;
+    display: flex;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+}
+
+.panel-split {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}
+
+.panel-split.row {
+    flex-direction: row;
+}
+
+.panel-split.column {
+    flex-direction: column;
+}
+
+.panel-leaf {
+    flex: 1 1 0;
     position: relative;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    min-width: 0;
 }
 
 .cameras-container {
-    display: none;
-    flex-wrap: wrap;
+    flex: 1;
+    display: flex;
     flex-direction: column;
+    overflow: auto;
+    min-width: 0;
+    min-height: 0;
 }
 
 .camera-panel {
@@ -87,63 +115,7 @@
 .viewer-panel {
     flex: 1;
     position: relative;
-    display: none;
-}
-
-.showBoth .viewer-panel,
-.showSceneOnly .viewer-panel {
     display: block;
-}
-
-.showImage .left-div {
-  grid-column: 1 / span 1;
-}
-
-.showImage .right-div {
-  grid-column: 2 / span 1;
-}
-
-.showImage:not(.showBoth):not(.showSceneOnly) .cameras-container {
-  display: flex;
-  flex: 1;
-}
-
-.showImage.showBoth .cameras-container,
-.showImage.showSceneOnly .cameras-container {
-  display: flex;
-  flex: 0 0 auto;
-}
-
-.showBoth .left-div {
-  grid-column: 1 / span 1;
-}
-
-.showBoth .right-div {
-  grid-column: 2 / span 1;
-}
-
-.showSceneOnly .left-div {
-  grid-column: 1 / span 0;
-}
-
-.showSceneOnly .right-div {
-  grid-column: 1 / span 2;
-}
-
-.swapped.showImage .left-div {
-    grid-column: 2 / span 1;
-}
-
-.swapped.showImage .right-div {
-    grid-column: 1 / span 1;
-}
-
-.swapped.showBoth .left-div {
-    grid-column: 2 / span 1;
-}
-
-.swapped.showBoth .right-div {
-    grid-column: 1 / span 1;
 }
 
 .viewer-panel canvas {
@@ -184,15 +156,13 @@
     <div class="top">
         <p style="margin:0 0 2px 0">
         <b>Plotting Tool</b>
-        <button onclick="loadDataFile()">Load data file</button>
-        <button onclick="connectViaWebSocket()">Start streaming</button>
+        <button onclick="loadDataFile()">Load Data File</button>
+        <button onclick="connectViaWebSocket()">Start Streaming</button>
         <!-- <button onclick="updateLayout()">Refresh Layout</button>
         <button onclick="onRefreshDerivedClick()">Refresh Derived</button> -->
         <button onclick="freeze()">Freeze</button>
-        <button onclick="toggleScene()">Toggle Scene</button>
-        <button onclick="toggleImage()">Toggle Image</button>
+        <button onclick="setPanelLayoutPrompt()">Set Layout</button>
         <button onclick="removeMark()">Remove Mark</button>
-        <button onclick="swapSplits()">Swap Splits</button>
         <button onclick="stepBack()">t--</button>
         <button onclick="stepForward()">t++</button>
 
@@ -226,8 +196,8 @@
         <div id="message" class="message"></div>
         </p>
     </div>
-    <div class="left-div" id="plots"></div>
-    <div class="right-div">
+    <div id="panelRoot" class="panel-root">
+        <div class="left-div" id="plots"></div>
         <div class="cameras-container" id="camerasContainer"></div>
         <div id="viewer" class="viewer-panel"></div>
     </div>
