@@ -182,18 +182,18 @@ class Plot {
 
         document.body.appendChild(this.domMainDiv)
 
-        this.domBtnAddTrace.addEventListener('click', (evt) => {
+        this.domBtnAddTrace.addEventListener('click', async (evt) => {
             let fieldName = this.domSelectFieldName.value
             let [ids, errorMsg] = parseFieldIndex(
                 this.domTraceFieldIndexInput.value, plot_data[fieldName].length);
 
             if (errorMsg) {
-                alert(errorMsg);
+                customAlert(errorMsg);
                 return;
             }
 
             if (ids.length === 0 || isNaN(ids[0])) {
-                alert("Please provide valid indices of the data to add.");
+                customAlert("Please provide valid indices of the data to add.");
                 document.querySelector('#trace_field_index_input').focus();
                 return;
             }
@@ -536,7 +536,7 @@ function readDatafile(binaryBuffer) {
     var data = pako.inflate(binData);
 
     if (!data) {
-        alert("Not able to parse the file as gzip. Was the file closed properly?");
+        customAlert("Not able to parse the file as gzip. Was the file closed properly?");
         return;
     }
 
@@ -718,7 +718,7 @@ function setup() {
     };
     ws.onerror = function (event) {
         stream_data = false
-        alert('Failed to open web socket. Assuming to load data file.')
+        customAlert('Failed to open web socket. Assuming to load data file.')
     }
 
     document.querySelector('#btn_start_stop').addEventListener('click', (evt) => {

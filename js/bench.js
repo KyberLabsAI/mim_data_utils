@@ -6,13 +6,13 @@ let ctx2 = canvasDom2.getContext('2d');
 
 async function runComputeShaderExample() {
     if (!navigator.gpu) {
-        alert("WebGPU is not supported in your browser!");
+        customAlert("WebGPU is not supported in your browser!");
         return;
     }
 
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
-        alert("No WebGPU adapter found.");
+        customAlert("No WebGPU adapter found.");
         return;
     }
 

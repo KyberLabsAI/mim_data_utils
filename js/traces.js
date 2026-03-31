@@ -1,7 +1,7 @@
 
 function assert(cond, desc) {
     if (!cond) {
-        alert(desc);
+        customAlert(desc);
         throw new Error(desc);
     }
 }

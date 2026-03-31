@@ -264,7 +264,7 @@ function applyPanelLayout(layoutText, persist = true) {
     forcePlotRefresh = true;
 }
 
-function setPanelLayoutPrompt() {
+async function setPanelLayoutPrompt() {
     let description = [
         'Available panels: t, 3d, img',
         'Operators: "|" horizontal, "/" vertical',
@@ -272,7 +272,7 @@ function setPanelLayoutPrompt() {
         'Examples: t|3d/img, t|(3d/img), (t|img)/3d',
     ].join('\n');
 
-    let entered = prompt(`${description}\n\nEnter panel layout:`, panelLayoutValue);
+    let entered = await customPrompt(`${description}\n\nEnter panel layout:`, panelLayoutValue);
     if (entered === null) {
         return;
     }
@@ -280,7 +280,7 @@ function setPanelLayoutPrompt() {
     try {
         applyPanelLayout(entered, true);
     } catch (err) {
-        alert(`Invalid layout: ${err.message}`);
+        customAlert(`Invalid layout: ${err.message}`);
     }
 }
 
@@ -762,12 +762,12 @@ addOptions.addEventListener('change', evt => {
     updateLayout();
 })
 
-function removeMark() {
-    let label = prompt("Which mark do you want to remove?").toUpperCase();
+async function removeMark() {
+    let label = await customPrompt("Which mark do you want to remove?");
     if (!label) {
         return;
     }
-    label.replaceAll(' ', '').split(',').forEach(l => marks.removeMarkByLabel(l));
+    label.toUpperCase().replaceAll(' ', '').split(',').forEach(l => marks.removeMarkByLabel(l));
 }
 
 
