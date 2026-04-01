@@ -54,6 +54,118 @@ def _matrix_to_quat_xyzw(R):
 
 
 
+def _rgba_material(rgba):
+    """Convert MuJoCo RGBA (0-1) to material dict with 0-255 color."""
+    if rgba is None:
+        return {}
+    color_255 = (np.clip(rgba, 0, 1) * 255).astype(int).tolist()
+    return {'color': color_255}
+
+
+def _make_plane_mesh(size, grid=5.0):
+    """Create a flat quad mesh in the XY plane.
+
+    MuJoCo plane size: [hx, hy, spacing]. If hx/hy are 0, use a large default.
+    """
+    hx = float(size[0]) if size[0] > 0 else grid
+    hy = float(size[1]) if size[1] > 0 else grid
+    vertices = np.array([
+        [-hx, -hy, 0], [hx, -hy, 0], [hx, hy, 0], [-hx, hy, 0],
+    ], dtype=np.float64)
+    indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    return vertices, indices
+
+
+def _make_box_mesh(half_extents):
+    """Create a box mesh from half-extents [hx, hy, hz]."""
+    hx, hy, hz = float(half_extents[0]), float(half_extents[1]), float(half_extents[2])
+    vertices = np.array([
+        [-hx, -hy, -hz], [ hx, -hy, -hz], [ hx,  hy, -hz], [-hx,  hy, -hz],
+        [-hx, -hy,  hz], [ hx, -hy,  hz], [ hx,  hy,  hz], [-hx,  hy,  hz],
+    ], dtype=np.float64)
+    indices = np.array([
+        [0,1,2], [0,2,3],  # bottom
+        [4,6,5], [4,7,6],  # top
+        [0,4,5], [0,5,1],  # front
+        [2,6,7], [2,7,3],  # back
+        [0,3,7], [0,7,4],  # left
+        [1,5,6], [1,6,2],  # right
+    ], dtype=np.int32)
+    return vertices, indices
+
+
+def _make_sphere_mesh(radius, n_lat=12, n_lon=16):
+    """Create a UV sphere mesh."""
+    r = float(radius)
+    vertices = [[0, 0, r]]  # top pole
+    for i in range(1, n_lat):
+        theta = np.pi * i / n_lat
+        for j in range(n_lon):
+            phi = 2 * np.pi * j / n_lon
+            vertices.append([r * np.sin(theta) * np.cos(phi),
+                             r * np.sin(theta) * np.sin(phi),
+                             r * np.cos(theta)])
+    vertices.append([0, 0, -r])  # bottom pole
+    vertices = np.array(vertices, dtype=np.float64)
+
+    indices = []
+    # Top cap
+    for j in range(n_lon):
+        indices.append([0, 1 + j, 1 + (j + 1) % n_lon])
+    # Body
+    for i in range(n_lat - 2):
+        for j in range(n_lon):
+            a = 1 + i * n_lon + j
+            b = 1 + i * n_lon + (j + 1) % n_lon
+            c = 1 + (i + 1) * n_lon + (j + 1) % n_lon
+            d = 1 + (i + 1) * n_lon + j
+            indices.append([a, b, c])
+            indices.append([a, c, d])
+    # Bottom cap
+    bottom = len(vertices) - 1
+    base = 1 + (n_lat - 2) * n_lon
+    for j in range(n_lon):
+        indices.append([bottom, base + (j + 1) % n_lon, base + j])
+    return vertices, np.array(indices, dtype=np.int32)
+
+
+def _make_cylinder_mesh(radius, half_height, n_seg=16):
+    """Create a cylinder mesh (capped) along Z axis."""
+    r, h = float(radius), float(half_height)
+    vertices = []
+    indices = []
+
+    # Bottom center, top center
+    vertices.append([0, 0, -h])  # 0: bottom center
+    vertices.append([0, 0,  h])  # 1: top center
+
+    # Bottom ring (indices 2 .. 2+n_seg-1)
+    for j in range(n_seg):
+        phi = 2 * np.pi * j / n_seg
+        vertices.append([r * np.cos(phi), r * np.sin(phi), -h])
+    # Top ring (indices 2+n_seg .. 2+2*n_seg-1)
+    for j in range(n_seg):
+        phi = 2 * np.pi * j / n_seg
+        vertices.append([r * np.cos(phi), r * np.sin(phi), h])
+
+    bot = 2
+    top = 2 + n_seg
+    # Bottom cap
+    for j in range(n_seg):
+        indices.append([0, bot + (j + 1) % n_seg, bot + j])
+    # Top cap
+    for j in range(n_seg):
+        indices.append([1, top + j, top + (j + 1) % n_seg])
+    # Side
+    for j in range(n_seg):
+        b0, b1 = bot + j, bot + (j + 1) % n_seg
+        t0, t1 = top + j, top + (j + 1) % n_seg
+        indices.append([b0, b1, t1])
+        indices.append([b0, t1, t0])
+
+    return np.array(vertices, dtype=np.float64), np.array(indices, dtype=np.int32)
+
+
 class MujocoMesh(RawMesh):
     def __init__(self, model, mesh_obj, rgba=None):
         vertices = model.mesh_vert[mesh_obj.vertadr[0]:mesh_obj.vertadr[0] + mesh_obj.vertnum[0]]
@@ -105,11 +217,25 @@ class MujocoVisualizer:
         for ig in range(model.ngeom):
             g = model.geom(ig)
 
-            # Ignore geometries without meshes.
-            if g.dataid < 0:
-                continue
+            geom_type = int(g.type[0]) if hasattr(g.type, '__len__') else int(g.type)
 
-            mesh = MujocoMesh(model, model.mesh(g.dataid[0]), rgba=g.rgba)
+            # mjtGeom: 0=plane, 2=sphere, 3=capsule, 5=cylinder, 6=box, 7=mesh
+            if geom_type == 0:  # plane
+                verts, faces = _make_plane_mesh(g.size)
+                mesh = RawMesh(verts, faces, material=_rgba_material(g.rgba))
+            elif geom_type == 7 and g.dataid[0] >= 0:
+                mesh = MujocoMesh(model, model.mesh(g.dataid[0]), rgba=g.rgba)
+            elif geom_type == 6:  # box
+                verts, faces = _make_box_mesh(g.size)
+                mesh = RawMesh(verts, faces, material=_rgba_material(g.rgba))
+            elif geom_type == 2:  # sphere
+                verts, faces = _make_sphere_mesh(g.size[0])
+                mesh = RawMesh(verts, faces, material=_rgba_material(g.rgba))
+            elif geom_type == 5:  # cylinder
+                verts, faces = _make_cylinder_mesh(g.size[0], g.size[1])
+                mesh = RawMesh(verts, faces, material=_rgba_material(g.rgba))
+            else:
+                continue
 
             # Store the transfrom from the body to geom on the mesh for later.
             mesh.offset = Pose(mj2pin(np.hstack([g.pos, g.quat])))
