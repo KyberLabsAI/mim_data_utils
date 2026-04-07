@@ -1,6 +1,3 @@
 #!/bin/bash
-
-adb reverse tcp:8000 tcp:8000 # Webserver.
-adb reverse tcp:5678 tcp:5678 # Websocket.
-
-python -m http.server 8000
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python "$SCRIPT_DIR/python/mim_data_utils/server.py"
