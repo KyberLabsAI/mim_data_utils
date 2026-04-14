@@ -73,6 +73,16 @@ function parsewebSocketData(data) {
     } else if (data.type == 'video_segment') {
         let cam = getOrCreateCamera(data.name || 'default');
         cam.addVideoSegment(data);
+    } else if (data.type == 'depth') {
+        const key = '3d/' + (data.name || 'default');
+        const pc = scene.objects.get(key);
+        if (pc && pc.addFrame) {
+            const t = parseFloat(data.time);
+            pc.addFrame(t, data.depth, data.rgb, data.depth_scale, data.intrinsics);
+        }
+        // If no PointCloud has been registered yet for this name, drop the
+        // frame. The static registration is normally sent once before any
+        // depth frame via logger.log_static(scene).
     } else if (data.type == 'marker') {
         let markerTime = parseFloat(data.time);
         let showSummary = data.show_summary === true;

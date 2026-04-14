@@ -78,6 +78,50 @@ class Mesh(RawMesh):
 
         super().__init__(mesh.points, mesh.cells_dict['triangle'], scale, material)
 
+
+class PointCloud:
+    """Depth-image based point cloud scene object.
+
+    The camera origin *is* the Scene object's pose: moving the depth camera
+    in the world is done via `scene.update_pos(name, new_pose)` followed by
+    the usual `logger.log(scene, t)`.
+    """
+    def __init__(self, width, height, fx, fy, cx, cy,
+                 depth_scale=1e-3, point_size=0.003, stride=1,
+                 default_color='ffffff'):
+        self.width = int(width)
+        self.height = int(height)
+        self.fx = float(fx)
+        self.fy = float(fy)
+        self.cx = float(cx)
+        self.cy = float(cy)
+        self.depth_scale = float(depth_scale)
+        self.stride = int(stride)
+        self.material = {
+            'color': default_color,
+            'size': float(point_size),
+            'sizeAttenuation': True,
+        }
+
+    def set_color(self, color):
+        self.material['color'] = color
+
+    def to_log_dict(self, name):
+        return {
+            'name': name,
+            'type': 'pointcloud',
+            'width': self.width,
+            'height': self.height,
+            'fx': self.fx,
+            'fy': self.fy,
+            'cx': self.cx,
+            'cy': self.cy,
+            'depth_scale': self.depth_scale,
+            'scale': [1, 1, 1],
+            'material': self.material,
+            'stride': self.stride,
+        }
+
 def parse_color_str(color):
     val = int(color, 16)
     if len(color) == 6:

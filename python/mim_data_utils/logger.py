@@ -14,8 +14,10 @@ import ormsgpack
 import queue
 import multiprocessing
 
-from .scene import RawMesh, Scene
+from .scene import RawMesh, Scene, PointCloud
 from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
+
+_CAMERA_TYPES = ('image', 'video_segment', 'depth')
 
 _SESSION_WORDS = [
     'red', 'blue', 'green', 'gold', 'silver', 'amber', 'coral', 'jade',
@@ -183,43 +185,58 @@ class FileLoggerReader:
 
 
 class WebsocketWriter:
+    # pyzmq sockets are NOT thread-safe. This lock serialises all socket
+    # touches (init/close/send) across every thread. Everything that can
+    # read or write self.publisher / self.camera_publisher acquires it.
     def __init__(self):
-        self.session_name =  None
+        self.session_name = None
         self.publisher = None
+        self.camera_publisher = None
+        self.num_connected_clients = None
+        self._lock = threading.RLock()
 
     def init(self):
-        assert(self.session_name is not None)
+        with self._lock:
+            assert(self.session_name is not None)
 
-        self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
-        self.camera_publisher = ZmqPublisher('/camera/', sndhwm=2)
-        self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
+            self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
+            self.camera_publisher = ZmqPublisher('/camera/', sndhwm=2)
+            self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
-        if not self.publisher.wait_connected():
-            raise ConnectionError('Timeseries publisher failed to connect to ZMQ broker')
-        if not self.camera_publisher.wait_connected():
-            raise ConnectionError('Camera publisher failed to connect to ZMQ broker')
+            if not self.publisher.wait_connected():
+                raise ConnectionError('Timeseries publisher failed to connect to ZMQ broker')
+            if not self.camera_publisher.wait_connected():
+                raise ConnectionError('Camera publisher failed to connect to ZMQ broker')
 
     def set_session(self, name):
-        self.session_name = name
+        with self._lock:
+            self.session_name = name
 
-        # Need to reconnect the publishers as the timeseries endpoint changes.
-        if self.publisher:
-            self.close()
-            self.init()
-        
+            # Need to reconnect the publishers as the timeseries endpoint
+            # changes.  Hold the lock across close+init so no other thread
+            # can try to send on a half-torn-down socket.
+            if self.publisher:
+                self.close()
+                self.init()
+
     _log_debug_count = 0
     _log_debug_img_count = 0
     _log_debug_last_print = 0
     _log_debug_max_img_age = 0
 
     def log(self, data):
-        if self.publisher is None:
-            self.init()
+        # Pack outside the lock to keep the critical section short.
+        camera_items = [d for d in data if d.get('type') in _CAMERA_TYPES]
+        other_items = [d for d in data if d.get('type') not in _CAMERA_TYPES]
 
-        self.last_data = data
-
-        camera_items = [d for d in data if d.get('type') in ('image', 'video_segment')]
-        other_items = [d for d in data if d.get('type') not in ('image', 'video_segment')]
+        camera_bytes = (
+            ormsgpack.packb(camera_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+            if camera_items else None
+        )
+        other_bytes = (
+            ormsgpack.packb(other_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+            if other_items else None
+        )
 
         # Debug: track image age at publish time
         now = time.time()
@@ -228,35 +245,49 @@ class WebsocketWriter:
             if item.get('type') == 'image' and 'time' in item:
                 age = now - item['time']
                 WebsocketWriter._log_debug_img_count += 1
-                WebsocketWriter._log_debug_max_img_age = max(WebsocketWriter._log_debug_max_img_age, age)
+                WebsocketWriter._log_debug_max_img_age = max(
+                    WebsocketWriter._log_debug_max_img_age, age)
 
-        if now - WebsocketWriter._log_debug_last_print >= 2.0 and WebsocketWriter._log_debug_img_count > 0:
+        if now - WebsocketWriter._log_debug_last_print >= 2.0 \
+                and WebsocketWriter._log_debug_img_count > 0:
             print(f"[ws-writer] {WebsocketWriter._log_debug_count} batches, "
                   f"{WebsocketWriter._log_debug_img_count} imgs, "
                   f"max_img_age={WebsocketWriter._log_debug_max_img_age:.3f}s, "
-                  f"batch_size={len(data)} items ({len(camera_items)} cam, {len(other_items)} other)")
+                  f"batch_size={len(data)} items "
+                  f"({len(camera_items)} cam, {len(other_items)} other)")
             WebsocketWriter._log_debug_count = 0
             WebsocketWriter._log_debug_img_count = 0
             WebsocketWriter._log_debug_max_img_age = 0
             WebsocketWriter._log_debug_last_print = now
 
-        if camera_items:
-            self.camera_publisher.send(ormsgpack.packb(camera_items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
-        if other_items:
-            self.publisher.send(ormsgpack.packb(other_items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
+        # Socket access must be serialised — pyzmq sockets are not
+        # thread-safe, and a concurrent close() from set_session() would
+        # otherwise let the zmq I/O thread touch freed memory (GPF).
+        with self._lock:
+            if self.publisher is None:
+                self.init()
+            self.last_data = data
+            if camera_bytes is not None:
+                self.camera_publisher.send(camera_bytes)
+            if other_bytes is not None:
+                self.publisher.send(other_bytes)
 
     def session_action(self, data):
-        if self.publisher is None:
-            self.init()
+        with self._lock:
+            if self.publisher is None:
+                self.init()
 
         active_session = ZmqRemoteValue('active_session')
         active_session.set(data['name'])
 
     def close(self):
-        if self.publisher:
-            self.publisher.close()
-        if hasattr(self, 'camera_publisher') and self.camera_publisher:
-            self.camera_publisher.close()
+        with self._lock:
+            if self.publisher:
+                self.publisher.close()
+                self.publisher = None
+            if getattr(self, 'camera_publisher', None):
+                self.camera_publisher.close()
+                self.camera_publisher = None
 
     def wait_for_client(self, timeout_s=5):
         tic = time.time()
@@ -366,7 +397,7 @@ class Logger(threading.Thread):
         print(f"Session: {self.session_name}")
 
         self.log_queue = queue.Queue()
-        self.loggable_value_classes = [RawMesh, Scene]
+        self.loggable_value_classes = [RawMesh, Scene, PointCloud]
 
         if layout_def is not None:
             self.layout(layout_def)
@@ -448,6 +479,9 @@ class Logger(threading.Thread):
         self.log(obj, 'static', silent_error)
 
     def _log_dict(self, obj, silent_error):
+        # Creating a copy so changing the original object's keys doesn't 
+        # interfer with the loggin.
+        obj = dict(obj)  
         res = {}
 
         for key, value in obj.items():
@@ -501,6 +535,36 @@ class Logger(threading.Thread):
             'time': time,
             'name': name,
             'payload': data
+        })
+
+    def log_depth(self, name, depth_u16, time, rgb_jpeg=None,
+                  depth_scale=None, intrinsics=None):
+        """Log a depth frame for the named PointCloud scene object.
+
+        depth_u16:  np.ndarray, dtype=uint16, shape (H, W). Sent as raw
+            little-endian uint16 bytes.
+        rgb_jpeg:   Optional JPEG-encoded RGB overlay (bytes). Caller is
+            responsible for encoding (e.g. cv2.imencode('.jpg', rgb)).
+        depth_scale: Per-frame override. None => use the value from the
+            static registration.
+        intrinsics: Optional per-frame intrinsics override.
+        """
+        assert isinstance(depth_u16, np.ndarray) and depth_u16.dtype == np.uint16 \
+            and depth_u16.ndim == 2, \
+            'log_depth requires a 2D uint16 numpy array'
+        h, w = depth_u16.shape
+        self._append_log({
+            'type': 'depth',
+            'time': time,
+            'name': name,
+            'width': int(w),
+            'height': int(h),
+            'depth_encoding': 'u16le',
+            'depth': np.ascontiguousarray(depth_u16).tobytes(),
+            'depth_scale': depth_scale,
+            'rgb_encoding': 'jpeg' if rgb_jpeg is not None else None,
+            'rgb': rgb_jpeg,
+            'intrinsics': intrinsics,
         })
 
     def log_video_segment(self, name, segment_info, init_file, base_url):

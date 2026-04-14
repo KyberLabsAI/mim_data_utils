@@ -411,6 +411,15 @@ class Scene3D {
             }
         }
 
+        // Drive time-driven scene objects (e.g. PointCloud3D) every frame.
+        // Each object self-guards via lastRenderedTime, so this is cheap
+        // when nothing has changed.
+        for (const entry of this.objects.values()) {
+            if (entry.syncToTime) {
+                entry.syncToTime(time);
+            }
+        }
+
         if (xrFrame) {
             this.xrHandleController(renderTime, xrFrame);
         }
@@ -522,6 +531,12 @@ function event3DCallback(type, evt, data) {
             let payload = traces.staticData.get(data);
             if (payload.type == '3dMesh') {
                 addUpdateObject(payload);
+            } else if (payload.type == 'pointcloud') {
+                // payload.name is already the '3d/<user-name>' key set by
+                // Scene.to_static_dict, so PointCloud3D registers under the
+                // same name Scene3D uses for pose updates.
+                const pc = new PointCloud3D(payload);
+                scene.addObject(pc);
             }
         break;
     }
