@@ -122,6 +122,7 @@ def list2numpy(data):
 
     return data
 
+
 class FileLoggerReader:
     def __init__(self, path, child=None):
         self.path = path
@@ -134,6 +135,8 @@ class FileLoggerReader:
         self.reader = self.dctx.stream_reader(self.fh)
 
     def reset(self):
+        self.fh.seek(0)
+        self.buffer = []
         self.reader = self.dctx.stream_reader(self.fh)
 
     def next(self):
@@ -154,7 +157,7 @@ class FileLoggerReader:
         # to numpy arrays.
         return list2numpy(self.buffer.pop(0))
 
-    def read_all(self, entry_filter_fn=lambda x: True):
+    def read_all(self, entry_filter_fn=lambda x: True, reducer_fn=None):
         self.reset()
         data = []
 
@@ -164,14 +167,20 @@ class FileLoggerReader:
             if entry is None:
                 break
 
-            if entry_filter_fn(entry):
-                data.append(entry)
+            if not entry_filter_fn(entry):
+                continue
+
+            if reducer_fn is not None:
+                entry = reducer_fn(entry)
+
+            data.append(entry)
 
         return data
 
     def close(self):
         self.reader.close()
         self.fh.close()
+
 
 class WebsocketWriter:
     def __init__(self):

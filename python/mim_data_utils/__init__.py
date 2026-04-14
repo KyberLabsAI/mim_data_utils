@@ -11,6 +11,8 @@ from .logger import (
     Logger
 )
 
+from .recorder import Recorder
+
 from .scene import RawMesh, Mesh, Scene
 try:
     from .mujoco import MujocoVisualizer
