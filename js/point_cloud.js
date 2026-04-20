@@ -55,6 +55,9 @@ class PointCloud3D {
             this._rgbPixels = this._rgbCtx.getImageData(0, 0, this.width, this.height).data;
             this._rgbReady = true;
         };
+        this._rgbImg.onerror = (e) => {
+            console.warn(`PointCloud3D '${this.name}': RGB JPEG decode failed`, e);
+        };
     }
 
     _parseColor(color) {
@@ -112,10 +115,14 @@ class PointCloud3D {
         if (!frame) return;
         if (frame.time === this.lastRenderedTime) return;
 
-        // Kick off RGB decode if this frame has a new URL.
+        // Kick off RGB decode if this frame has a new URL. We intentionally
+        // do NOT reset _rgbReady here: at live frame rates new URLs arrive
+        // faster than the browser can decode JPEGs, and flipping the flag
+        // on every frame would leave the points rendering the default
+        // colour forever. Instead we keep the last successfully-decoded
+        // image until a newer one finishes loading.
         if (frame.rgbUrl && frame.rgbUrl !== this._rgbPendingUrl) {
             this._rgbPendingUrl = frame.rgbUrl;
-            this._rgbReady = false;
             this._rgbImg.src = frame.rgbUrl;
         } else if (!frame.rgbUrl) {
             // No RGB for this frame — reset state so the default colour is used.
@@ -146,7 +153,12 @@ class PointCloud3D {
 
         // frame.depth is a Uint8Array view of raw u16 little-endian bytes.
         // Construct a Uint16Array view over the same buffer (x86 is little-endian).
-        const bytes = frame.depth;
+        // The msgpack decoder can hand us the bytes at an odd byteOffset; in
+        // that case fall back to a copy so the Uint16Array view is aligned.
+        let bytes = frame.depth;
+        if (bytes.byteOffset % 2 !== 0) {
+            bytes = new Uint8Array(bytes);
+        }
         const depth = new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
 
         const stride = this.stride;

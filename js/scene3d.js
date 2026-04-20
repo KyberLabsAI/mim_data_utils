@@ -56,11 +56,36 @@ class Mesh3D {
 
 class ControlableViewer {
     constructor(aspectRation, domElement) {
-        let camera = this.camera = new THREE.PerspectiveCamera(75, aspectRation, 0.001, 1000);
-        camera.position.z = 1;
-        camera.up.set(0, 0, 1)
+        let camera = this.camera = new THREE.PerspectiveCamera(50, aspectRation, 0.001, 1000);
+        camera.position.set(1.5, 1.5, 1.5);
+        camera.up.set(0, 0, 1);
+        camera.lookAt(0, 0, 0);
 
-        this.controls = new OrbitControls(camera, domElement);
+        const controls = this.controls = new OrbitControls(camera, domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.1;
+        controls.screenSpacePanning = true;
+        controls.rotateSpeed = 0.8;
+        controls.panSpeed = 0.8;
+        // Allow full vertical rotation without polar lock
+        controls.minPolarAngle = 0;
+        controls.maxPolarAngle = Math.PI;
+
+        // Replace built-in dolly with fly-forward: move both camera and target
+        // along the look direction so the pivot travels with the camera and
+        // never blocks further forward movement.
+        controls.enableZoom = false;
+        domElement.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            // Scale speed by distance to target for a natural feel at any scale
+            const dist = camera.position.distanceTo(controls.target);
+            const step = dir.multiplyScalar(-e.deltaY * 0.001 * dist);
+            camera.position.add(step);
+            controls.target.add(step);
+            controls.update();
+        }, { passive: false });
     }
 
     updateAspect(aspectRation) {
@@ -80,6 +105,8 @@ class ControlableViewer {
         let cam = this.camera;
         cam.position.set(...position);
         cam.lookAt(...lookAt);
+        this.controls.target.set(...lookAt);
+        this.controls.update();
     }
 }
 
