@@ -54,6 +54,170 @@ class Mesh3D {
     }
 }
 
+// Free-fly camera controller (replaces OrbitControls). The camera moves
+// freely through the scene rather than orbiting a fixed pivot.
+//
+//   LMB drag        : trackball look (axis ⊥ to drag, in camera screen plane)
+//   RMB drag        : pan (translate perpendicular to view)
+//   ALT + LMB drag  : pan (alternate to RMB)
+//   Mouse wheel     : fly forward / backward along the view direction
+//   W/A/S/D         : strafe (forward / left / back / right)
+//   E / Q           : up / down along the camera's local up axis
+//
+// Exposes the same shape OrbitControls did (`enabled`, `target`, `update()`)
+// so the rest of the viewer (headlight tracking, updateLocation()) keeps
+// working unchanged. `target` is no longer a fixed orbit pivot — it's a
+// derived point one unit in front of the camera, refreshed whenever the
+// camera moves; the headlight uses it as its aim direction.
+class FreeCameraControls {
+    constructor(camera, domElement) {
+        this.camera = camera;
+        this.domElement = domElement;
+        this.enabled = true;
+
+        // Tunables.
+        this.rotateSpeed = 0.0035;     // radians per pixel of mouse drag
+        this.panSpeed   = 0.002;       // world units per pixel
+        this.wheelSpeed = 0.001;       // world units per wheel tick
+        this.keySpeed   = 1.0;         // world units per second when key held
+
+        this.target = new THREE.Vector3();
+        this._updateTarget();
+
+        this._dragging = null;          // null | 'rotate' | 'pan'
+        this._lastX = 0;
+        this._lastY = 0;
+        this._keys = new Set();
+        this._lastUpdateTime = performance.now();
+
+        // Mouse + wheel.
+        this._onMouseDown = (e) => {
+            if (!this.enabled) return;
+            if (e.button === 0) {
+                // Alt+LMB pans, plain LMB rotates.
+                this._dragging = e.altKey ? 'pan' : 'rotate';
+            } else if (e.button === 2) {
+                this._dragging = 'pan';
+            } else {
+                return;
+            }
+            this._lastX = e.clientX;
+            this._lastY = e.clientY;
+            e.preventDefault();
+        };
+        this._onMouseUp = () => { this._dragging = null; };
+        this._onMouseMove = (e) => {
+            if (!this.enabled || !this._dragging) return;
+            const dx = e.clientX - this._lastX;
+            const dy = e.clientY - this._lastY;
+            this._lastX = e.clientX;
+            this._lastY = e.clientY;
+            if (this._dragging === 'rotate') this._rotate(dx, dy);
+            else if (this._dragging === 'pan') this._pan(dx, dy);
+        };
+        this._onContextMenu = (e) => e.preventDefault();
+        this._onWheel = (e) => {
+            if (!this.enabled) return;
+            e.preventDefault();
+            const dir = new THREE.Vector3();
+            this.camera.getWorldDirection(dir);
+            this.camera.position.addScaledVector(dir, -e.deltaY * this.wheelSpeed);
+            this._updateTarget();
+        };
+
+        // Keyboard (window-level so focus on the canvas isn't required).
+        // Ignore key events when an editable element has focus so typing in
+        // a text box / textarea / contenteditable doesn't fly the camera.
+        const _isTyping = () => {
+            const el = document.activeElement;
+            if (!el || el === document.body) return false;
+            const tag = el.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+            return el.isContentEditable === true;
+        };
+        this._onKeyDown = (e) => {
+            if (!this.enabled) return;
+            if (_isTyping()) return;
+            this._keys.add(e.code);
+        };
+        this._onKeyUp = (e) => {
+            // Always clear so a key released outside a text box doesn't stick.
+            this._keys.delete(e.code);
+        };
+
+        domElement.addEventListener('mousedown', this._onMouseDown);
+        domElement.addEventListener('contextmenu', this._onContextMenu);
+        domElement.addEventListener('wheel', this._onWheel, { passive: false });
+        window.addEventListener('mouseup', this._onMouseUp);
+        window.addEventListener('mousemove', this._onMouseMove);
+        window.addEventListener('keydown', this._onKeyDown);
+        window.addEventListener('keyup', this._onKeyUp);
+    }
+
+    _rotate(dx, dy) {
+        const camera = this.camera;
+        // Trackball-style: rotate around an axis perpendicular to the drag
+        // direction in screen space. The axis lies in the camera's local
+        // XY (screen) plane, then is transformed into world space via the
+        // current camera orientation. This makes the rotation always feel
+        // proportional to the drag direction regardless of camera tilt —
+        // a horizontal drag yaws around the camera's local up, a vertical
+        // drag pitches around the camera's local right, and diagonal
+        // drags rotate around the corresponding diagonal axis.
+        const angle = -Math.hypot(dx, dy) * this.rotateSpeed;
+        if (Math.abs(angle) < 1e-9) return;
+        const axisLocal = new THREE.Vector3(dy, dx, 0).normalize();
+        const axisWorld = axisLocal.applyQuaternion(camera.quaternion);
+        const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+        camera.quaternion.premultiply(q);
+        camera.quaternion.normalize();
+        this._updateTarget();
+    }
+
+    _pan(dx, dy) {
+        const camera = this.camera;
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const up    = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+        camera.position.addScaledVector(right, -dx * this.panSpeed);
+        camera.position.addScaledVector(up,     dy * this.panSpeed);
+        this._updateTarget();
+    }
+
+    _updateTarget() {
+        const dir = new THREE.Vector3();
+        this.camera.getWorldDirection(dir);
+        this.target.copy(this.camera.position).add(dir);
+    }
+
+    update() {
+        const now = performance.now();
+        const dt = (now - this._lastUpdateTime) / 1000;
+        this._lastUpdateTime = now;
+        if (!this.enabled || this._keys.size === 0) return;
+
+        const camera = this.camera;
+        const dir = new THREE.Vector3();
+        camera.getWorldDirection(dir);
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const localUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+        const move = new THREE.Vector3();
+        if (this._keys.has('KeyW')) move.addScaledVector(dir, 1);
+        if (this._keys.has('KeyS')) move.addScaledVector(dir, -1);
+        if (this._keys.has('KeyD')) move.addScaledVector(right, 1);
+        if (this._keys.has('KeyA')) move.addScaledVector(right, -1);
+        if (this._keys.has('KeyE')) move.addScaledVector(localUp, 1);
+        if (this._keys.has('KeyQ')) move.addScaledVector(localUp, -1);
+
+        if (move.lengthSq() > 0) {
+            move.normalize().multiplyScalar(this.keySpeed * dt);
+            camera.position.add(move);
+            this._updateTarget();
+        }
+    }
+}
+
+
 class ControlableViewer {
     constructor(aspectRation, domElement) {
         let camera = this.camera = new THREE.PerspectiveCamera(50, aspectRation, 0.001, 1000);
@@ -61,31 +225,7 @@ class ControlableViewer {
         camera.up.set(0, 0, 1);
         camera.lookAt(0, 0, 0);
 
-        const controls = this.controls = new OrbitControls(camera, domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.1;
-        controls.screenSpacePanning = true;
-        controls.rotateSpeed = 0.8;
-        controls.panSpeed = 0.8;
-        // Allow full vertical rotation without polar lock
-        controls.minPolarAngle = 0;
-        controls.maxPolarAngle = Math.PI;
-
-        // Replace built-in dolly with fly-forward: move both camera and target
-        // along the look direction so the pivot travels with the camera and
-        // never blocks further forward movement.
-        controls.enableZoom = false;
-        domElement.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            const dir = new THREE.Vector3();
-            camera.getWorldDirection(dir);
-            // Scale speed by distance to target for a natural feel at any scale
-            const dist = camera.position.distanceTo(controls.target);
-            const step = dir.multiplyScalar(-e.deltaY * 0.001 * dist);
-            camera.position.add(step);
-            controls.target.add(step);
-            controls.update();
-        }, { passive: false });
+        this.controls = new FreeCameraControls(camera, domElement);
     }
 
     updateAspect(aspectRation) {
@@ -105,8 +245,7 @@ class ControlableViewer {
         let cam = this.camera;
         cam.position.set(...position);
         cam.lookAt(...lookAt);
-        this.controls.target.set(...lookAt);
-        this.controls.update();
+        this.controls._updateTarget();
     }
 }
 
