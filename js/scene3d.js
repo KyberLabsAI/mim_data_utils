@@ -54,21 +54,20 @@ class Mesh3D {
     }
 }
 
-// Free-fly camera controller (replaces OrbitControls). The camera moves
-// freely through the scene rather than orbiting a fixed pivot.
+// Hybrid orbit / free-fly camera controller. Rotation orbits around a
+// movable pivot (`target`); pan, fly-keys, and zoom let the user reach any
+// part of the scene. Double-clicking on geometry recenters the pivot, so
+// the camera can keep orbiting cleanly around whichever object the user
+// is currently working on (the standard Blender / Maya / RViz idiom).
 //
-//   LMB drag        : trackball look (axis ⊥ to drag, in camera screen plane)
-//   RMB drag        : pan (translate perpendicular to view)
+//   LMB drag        : orbit around `target`
+//   RMB drag        : pan (translate camera + target perpendicular to view)
 //   ALT + LMB drag  : pan (alternate to RMB)
 //   Mouse wheel     : fly forward / backward along the view direction
-//   W/A/S/D         : strafe (forward / left / back / right)
-//   E / Q           : up / down along the camera's local up axis
-//
-// Exposes the same shape OrbitControls did (`enabled`, `target`, `update()`)
-// so the rest of the viewer (headlight tracking, updateLocation()) keeps
-// working unchanged. `target` is no longer a fixed orbit pivot — it's a
-// derived point one unit in front of the camera, refreshed whenever the
-// camera moves; the headlight uses it as its aim direction.
+//   W/A/S/D         : strafe; target translates with the camera
+//   E / Q           : up / down along camera-local up; target translates too
+//   Double-click    : recenter `target` on the clicked surface point
+//                     (handled in Scene3D, which has the scene + raycaster)
 class FreeCameraControls {
     constructor(camera, domElement) {
         this.camera = camera;
@@ -77,12 +76,18 @@ class FreeCameraControls {
 
         // Tunables.
         this.rotateSpeed = 0.0035;     // radians per pixel of mouse drag
-        this.panSpeed   = 0.002;       // world units per pixel
+        this.panSpeed   = 0.002;       // world units per pixel, scaled by pivot distance
         this.wheelSpeed = 0.001;       // world units per wheel tick
         this.keySpeed   = 1.0;         // world units per second when key held
+        this.recenterDuration = 0.4;   // seconds for target-recenter animation
 
-        this.target = new THREE.Vector3();
-        this._updateTarget();
+        this.target = new THREE.Vector3(0, 0, 0);
+
+        // Smooth recenter animation state.
+        this._animActive = false;
+        this._animT = 0;
+        this._animFrom = new THREE.Vector3();
+        this._animTo   = new THREE.Vector3();
 
         this._dragging = null;          // null | 'rotate' | 'pan'
         this._lastX = 0;
@@ -119,10 +124,12 @@ class FreeCameraControls {
         this._onWheel = (e) => {
             if (!this.enabled) return;
             e.preventDefault();
+            // Wheel zooms along the view direction. Target is left in
+            // place, so wheeling moves the camera toward / away from the
+            // current pivot — exactly what users expect from orbit zoom.
             const dir = new THREE.Vector3();
             this.camera.getWorldDirection(dir);
             this.camera.position.addScaledVector(dir, -e.deltaY * this.wheelSpeed);
-            this._updateTarget();
         };
 
         // Keyboard (window-level so focus on the canvas isn't required).
@@ -156,43 +163,80 @@ class FreeCameraControls {
 
     _rotate(dx, dy) {
         const camera = this.camera;
-        // Trackball-style: rotate around an axis perpendicular to the drag
-        // direction in screen space. The axis lies in the camera's local
-        // XY (screen) plane, then is transformed into world space via the
-        // current camera orientation. This makes the rotation always feel
-        // proportional to the drag direction regardless of camera tilt —
-        // a horizontal drag yaws around the camera's local up, a vertical
-        // drag pitches around the camera's local right, and diagonal
-        // drags rotate around the corresponding diagonal axis.
-        const angle = -Math.hypot(dx, dy) * this.rotateSpeed;
-        if (Math.abs(angle) < 1e-9) return;
-        const axisLocal = new THREE.Vector3(dy, dx, 0).normalize();
-        const axisWorld = axisLocal.applyQuaternion(camera.quaternion);
-        const q = new THREE.Quaternion().setFromAxisAngle(axisWorld, angle);
+        // Standard orbit decomposition: horizontal drag → yaw around world
+        // up; vertical drag → pitch around camera-local right. Because right
+        // is always perpendicular to world up under this scheme, no roll
+        // accumulates around the view axis (the camera stays "level").
+        const yawAngle   = -dx * this.rotateSpeed;
+        let   pitchAngle = -dy * this.rotateSpeed;
+        if (yawAngle === 0 && pitchAngle === 0) return;
+
+        const worldUp = camera.up.clone().normalize();
+        const right   = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+
+        // Clamp pitch so the view doesn't cross the world-up pole and flip
+        // the camera upside-down (matches Maya/Blender/OrbitControls).
+        const viewDir = new THREE.Vector3();
+        camera.getWorldDirection(viewDir);
+        const polar = Math.acos(THREE.MathUtils.clamp(viewDir.dot(worldUp), -1, 1));
+        const eps = 0.01;
+        const newPolar = THREE.MathUtils.clamp(polar - pitchAngle, eps, Math.PI - eps);
+        pitchAngle = polar - newPolar;
+
+        const qYaw   = new THREE.Quaternion().setFromAxisAngle(worldUp, yawAngle);
+        const qPitch = new THREE.Quaternion().setFromAxisAngle(right,   pitchAngle);
+        const q = qYaw.multiply(qPitch); // pitch first, then yaw (both in world frame)
+
+        const offset = camera.position.clone().sub(this.target);
+        offset.applyQuaternion(q);
+        camera.position.copy(this.target).add(offset);
         camera.quaternion.premultiply(q);
         camera.quaternion.normalize();
-        this._updateTarget();
     }
 
     _pan(dx, dy) {
         const camera = this.camera;
         const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
         const up    = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-        camera.position.addScaledVector(right, -dx * this.panSpeed);
-        camera.position.addScaledVector(up,     dy * this.panSpeed);
-        this._updateTarget();
+        // Scale by distance to pivot so the on-screen drag rate stays
+        // roughly consistent regardless of how zoomed-in the user is.
+        const dist = Math.max(camera.position.distanceTo(this.target), 0.1);
+        const offset = new THREE.Vector3();
+        offset.addScaledVector(right, -dx * this.panSpeed * dist);
+        offset.addScaledVector(up,     dy * this.panSpeed * dist);
+        camera.position.add(offset);
+        this.target.add(offset);
     }
 
-    _updateTarget() {
-        const dir = new THREE.Vector3();
-        this.camera.getWorldDirection(dir);
-        this.target.copy(this.camera.position).add(dir);
+    // Recenter the orbit pivot on a world-space point. With animate=true the
+    // target eases over `recenterDuration`; the camera position is left
+    // untouched, so the user keeps their current viewpoint and now orbits
+    // around the new pivot.
+    setTarget(worldPos, animate = true) {
+        if (!animate) {
+            this.target.copy(worldPos);
+            this._animActive = false;
+            return;
+        }
+        this._animFrom.copy(this.target);
+        this._animTo.copy(worldPos);
+        this._animT = 0;
+        this._animActive = true;
     }
 
     update() {
         const now = performance.now();
         const dt = (now - this._lastUpdateTime) / 1000;
         this._lastUpdateTime = now;
+
+        // Ease the orbit pivot toward its requested position.
+        if (this._animActive) {
+            this._animT = Math.min(1, this._animT + dt / this.recenterDuration);
+            const k = 1 - Math.pow(1 - this._animT, 3); // ease-out cubic
+            this.target.lerpVectors(this._animFrom, this._animTo, k);
+            if (this._animT >= 1) this._animActive = false;
+        }
+
         if (!this.enabled || this._keys.size === 0) return;
 
         const camera = this.camera;
@@ -211,8 +255,11 @@ class FreeCameraControls {
 
         if (move.lengthSq() > 0) {
             move.normalize().multiplyScalar(this.keySpeed * dt);
+            // Translate target with the camera so the orbit pivot stays
+            // in the same camera-relative position; the user's view of
+            // the pivot doesn't suddenly drift when they fly with WASD.
             camera.position.add(move);
-            this._updateTarget();
+            this.target.add(move);
         }
     }
 }
@@ -245,7 +292,7 @@ class ControlableViewer {
         let cam = this.camera;
         cam.position.set(...position);
         cam.lookAt(...lookAt);
-        this.controls._updateTarget();
+        this.controls.setTarget(new THREE.Vector3(...lookAt), false);
     }
 }
 
@@ -336,6 +383,19 @@ class Scene3D {
             })
         });
 
+        // Double-click to recenter the orbit pivot on whatever surface the
+        // user clicked. We raycast against the scene meshes for the active
+        // viewer's camera and, on a hit, ask the controls to ease their
+        // `target` to the hit point. The camera position is preserved so
+        // the user keeps their viewpoint and now orbits around the new
+        // pivot.
+        this._raycaster = new THREE.Raycaster();
+        this._pivotIndicator = this._buildPivotIndicator();
+        scene.add(this._pivotIndicator);
+        renderer.domElement.addEventListener('dblclick', (evt) => {
+            this._handleDoubleClick(evt);
+        });
+
         if (hasXR) {
             navigator.xr.isSessionSupported('immersive-vr').then(supported => {
                 if (supported) {
@@ -399,18 +459,95 @@ class Scene3D {
         this.resize();
     }
 
+    _buildPivotIndicator() {
+        // Small always-on-top sphere that briefly flashes at the new pivot
+        // after a double-click recenter so the user can see where the
+        // orbit point moved to.
+        const geom = new THREE.SphereGeometry(0.012, 16, 12);
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0xffcc33,
+            transparent: true,
+            opacity: 0,
+            depthTest: false,
+            depthWrite: false,
+        });
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.renderOrder = 999;
+        mesh.visible = false;
+        mesh._flashUntil = 0;
+        return mesh;
+    }
+
+    _flashPivot(worldPos) {
+        const ind = this._pivotIndicator;
+        ind.position.copy(worldPos);
+        ind.visible = true;
+        ind.material.opacity = 0.9;
+        ind._flashUntil = performance.now() + 900;
+    }
+
+    _updatePivotIndicator() {
+        const ind = this._pivotIndicator;
+        if (!ind.visible) return;
+        const remaining = ind._flashUntil - performance.now();
+        if (remaining <= 0) {
+            ind.visible = false;
+            ind.material.opacity = 0;
+            return;
+        }
+        // Last 400 ms fade out; before that, hold full opacity.
+        ind.material.opacity = 0.9 * Math.min(1, remaining / 400);
+        // Track the controls' (possibly animating) target so the dot
+        // follows the eased pivot, not just the final position.
+        if (this.viewers.length > 0) {
+            ind.position.copy(this.viewers[0].controls.target);
+        }
+    }
+
+    _handleDoubleClick(evt) {
+        const viewerIdx = this._getViewerIndexAt(evt.offsetX, evt.offsetY);
+        if (viewerIdx < 0 || viewerIdx >= this.viewers.length) return;
+        const viewer = this.viewers[viewerIdx];
+
+        // Map canvas-relative coords to NDC inside the active viewer's
+        // sub-viewport (viewers are tiled horizontally).
+        const localX = evt.offsetX - viewerIdx * this.viewerWidth;
+        const ndc = new THREE.Vector2(
+            (localX / this.viewerWidth) * 2 - 1,
+            -(evt.offsetY / this.height) * 2 + 1,
+        );
+        this._raycaster.setFromCamera(ndc, viewer.camera);
+
+        // Skip the pivot indicator itself and any non-mesh helpers (lights,
+        // light targets) so we only land on real geometry.
+        const candidates = [];
+        this.scene.traverseVisible((node) => {
+            if (node === this._pivotIndicator) return;
+            if (node.isMesh || node.isPoints) candidates.push(node);
+        });
+        const hits = this._raycaster.intersectObjects(candidates, false);
+        if (hits.length === 0) return;
+
+        const point = hits[0].point.clone();
+        viewer.controls.setTarget(point, true);
+        this._flashPivot(point);
+    }
+
     _updateHeadlight() {
         if (this.viewers.length === 0) return;
 
         const viewer = this.viewers[0];
         const camera = viewer.camera;
-        const target = viewer.controls.target;
 
         // Compute light position: 5 units above and 3 units to the right in camera-local coords
         const offset = new THREE.Vector3(3, 5, 0);
         offset.applyQuaternion(camera.quaternion);
         this.headlight.position.copy(camera.position).add(offset);
-        this.headlight.target.position.copy(target);
+        // Aim the light along the camera's view direction (not the orbit
+        // pivot) so rotating the camera rotates the light with it.
+        const viewDir = new THREE.Vector3();
+        camera.getWorldDirection(viewDir);
+        this.headlight.target.position.copy(camera.position).add(viewDir);
     }
 
     _getViewerIndexAt(x, y) {
@@ -591,6 +728,7 @@ class Scene3D {
         }
 
         this._updateHeadlight();
+        this._updatePivotIndicator();
 
         this.viewers.forEach((viewer, i) => {
             viewer.updateControls();
