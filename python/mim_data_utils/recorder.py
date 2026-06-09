@@ -42,6 +42,29 @@ def _safe_name(name):
     return ''.join(c if (c.isalnum() or c in '-_.') else '_' for c in str(name))
 
 
+def _fill_template(template):
+    """Fill a recording-path template for a new section.
+
+    A ``{timestamp}`` placeholder in ``template`` is replaced with the current
+    ``YYYYmmdd_HHMMSS``; if the template has no placeholder the timestamp is
+    appended before the extension instead. A numeric suffix is added if the
+    resulting file already exists, so sections never overwrite each other.
+    """
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    if '{timestamp}' in template:
+        filled = template.replace('{timestamp}', ts)
+    else:
+        p = Path(template)
+        filled = str(p.with_name(f'{p.stem}_{ts}{p.suffix}'))
+    p = Path(filled)
+    candidate = p
+    n = 2
+    while candidate.exists():
+        candidate = p.with_name(f'{p.stem}_{n}{p.suffix}')
+        n += 1
+    return str(candidate)
+
+
 class _CameraEncoder:
     """Encodes one camera's incoming JPEG frames into an H.265 .mp4 via ffmpeg.
 
@@ -148,13 +171,45 @@ class _CameraEncoder:
                 self.proc.kill()
                 ret = self.proc.wait()
             fps = self.fps if self.fps is not None else 0.0
+            self.proc = None
             if ret != 0 or self.failed:
                 print(f'[recorder]   {self.name}: ENCODE FAILED '
                       f'(ffmpeg exit {ret}) -> {self.out_path}')
             else:
+                self._remux_faststart()
                 print(f'[recorder]   {self.name}: {self.frame_count} frames '
                       f'@ {fps:.1f} fps -> {self.out_path}')
-            self.proc = None
+
+    def _remux_faststart(self):
+        """Rewrite the fragmented recording into a normal indexed MP4.
+
+        The live file is fragmented (empty_moov) so it can be viewed while
+        recording, but a fragmented file has no sample table, so players seek
+        poorly (artefacts on non-keyframe fragments, jumping time counter).
+        A stream-copy remux with +faststart rebuilds a proper moov index, so
+        the finished file seeks cleanly.  No re-encoding, so it is fast.
+        """
+        src = Path(self.out_path)
+        if not src.exists() or src.stat().st_size == 0:
+            return
+        tmp = src.with_name(src.stem + '.remux.mp4')
+        cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-i', str(src),
+               '-c', 'copy', '-movflags', '+faststart', str(tmp)]
+        try:
+            ret = subprocess.run(
+                cmd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        except OSError as e:
+            print(f'[recorder]   {self.name}: remux skipped ({e}); '
+                  'kept fragmented file (live-viewable, seeks poorly)')
+            return
+        if ret == 0 and tmp.exists() and tmp.stat().st_size > 0:
+            tmp.replace(src)
+        else:
+            if tmp.exists():
+                tmp.unlink()
+            print(f'[recorder]   {self.name}: remux failed (ffmpeg exit {ret}); '
+                  'kept fragmented file (live-viewable, seeks poorly)')
 
 
 class Recorder:
@@ -389,7 +444,9 @@ def main():
     parser = argparse.ArgumentParser(
         description='Record mim_data_utils websocket stream to a file.')
     parser.add_argument('path', nargs='?', default=None,
-                        help='Output file path (default: recording_<timestamp>.zst)')
+                        help='Output path template; "{timestamp}" is replaced '
+                             'per recording section (default: '
+                             'recording_{timestamp}.zst)')
     parser.add_argument('--max-size', type=float, default=500,
                         help='Max file size in MB (default: 500)')
     parser.add_argument('--host', default='127.0.0.1',
@@ -409,11 +466,14 @@ def main():
                              'recording (logged by default)')
     args = parser.parse_args()
 
-    if args.path is None:
-        args.path = f'recording_{datetime.now():%Y%m%d_%H%M%S}.zst'
+    # The path is a template filled per recording section (see _fill_template):
+    # its "{timestamp}" placeholder is replaced with the moment SPACE starts the
+    # section, so pause/resume never overwrites a previous section. The per
+    # camera .mp4 names derive from rec.path, so video files rotate too.
+    template = args.path if args.path is not None else 'recording_{timestamp}.zst'
 
     rec = Recorder(
-        path=args.path,
+        path=_fill_template(template),
         max_file_size_mb=args.max_size,
         host=args.host,
         port=args.port,
@@ -449,12 +509,11 @@ def main():
                         rec.stop_recording()
                         print('  Stopped. Press [SPACE] to start a new recording.')
                     else:
-                        # New recording gets a fresh timestamp if using default
-                        if not any(a for a in sys.argv[1:]
-                                   if not a.startswith('-')):
-                            rec.path = (f'recording_'
-                                        f'{datetime.now():%Y%m%d_%H%M%S}.zst')
-
+                        # Each section gets its own file (and its own per-camera
+                        # .mp4 files, derived from rec.path) stamped with the
+                        # moment SPACE started it, so resuming after a pause
+                        # never overwrites a previous section.
+                        rec.path = _fill_template(template)
                         rec.start_recording()
 
                 elif ch == '\x03':  # Ctrl+C (fallback if ISIG is disabled)
