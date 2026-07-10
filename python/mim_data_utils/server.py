@@ -34,7 +34,8 @@ class WebsocketHandler(WebSocket):
 
 
 class BinaryWebSocketServer(threading.Thread):
-    def __init__(self, handler_cls, host='0.0.0.0', port=9001):
+    def __init__(self, handler_cls, host='0.0.0.0', port=9001,
+                 video_backlog=30, ts_backlog=400):
         super().__init__(daemon=True)  # run as daemon thread
         self.host = host
         self.port = port
@@ -42,6 +43,20 @@ class BinaryWebSocketServer(threading.Thread):
         self._server = None
         self.handler_cls = handler_cls
         handler_cls.ws_server = self
+        # Prioritized backpressure. A viewer that can't keep up otherwise grows an
+        # unbounded SimpleWebSocketServer sendq, so it keeps receiving old data and
+        # its lag grows without bound. We cap each client's queue depth, but at two
+        # levels against the same (shared) queue so lower-value data is shed first:
+        #   - camera/video frames drop once the queue passes `video_backlog` (low),
+        #   - timeseries frames drop only past `ts_backlog` (high).
+        # So under mild overload only video is dropped and the plots keep flowing;
+        # only when dropping all video still isn't enough does timeseries thin out.
+        # Both bound the lag and let the client self-heal once it drains.
+        # (deque len/append are atomic, so no lock is needed here.)
+        self.video_backlog = video_backlog
+        self.ts_backlog = ts_backlog
+        self._dropped = {}          # client -> {'camera': n, 'timeseries': n}
+        self._last_drop_log = 0.0
 
     @property
     def num_clients(self):
@@ -53,14 +68,44 @@ class BinaryWebSocketServer(threading.Thread):
         print(f"Websocket server running on ws://{self.host}:{self.port}")
         self._server.serveforever()
 
-    def broadcast(self, data: bytes):
-        """Send binary data to all connected clients."""
+    def broadcast(self, data: bytes, priority='timeseries'):
+        """Send binary data to all clients, dropping for slow ones by priority.
+
+        priority='camera'     -> low: dropped once the client's queue passes
+                                 video_backlog (video is shed first).
+        priority='timeseries' -> high: dropped only past ts_backlog (protected;
+                                 thins out only when dropping video isn't enough).
+        """
+        cap = self.video_backlog if priority == 'camera' else self.ts_backlog
         for client in list(self.clients):  # list() to avoid set change during iteration
             try:
+                if len(client.sendq) >= cap:
+                    # Client is behind at this priority level; drop to let it catch up.
+                    counts = self._dropped.setdefault(
+                        client, {'camera': 0, 'timeseries': 0})
+                    counts[priority] += 1
+                    continue
                 client.sendMessage(data)
             except Exception as e:
                 print("Failed to send to client:", e)
                 self.clients.discard(client)  # remove dead client
+                self._dropped.pop(client, None)
+        self._log_drops()
+
+    def _log_drops(self):
+        """Print, at most every 2 s, which clients are behind and what's dropped."""
+        now = time.time()
+        if now - self._last_drop_log < 2.0:
+            return
+        self._last_drop_log = now
+        parts = [
+            f"{getattr(c, 'address', c)} backlog={len(c.sendq)} "
+            f"video_dropped={d['camera']} ts_dropped={d['timeseries']}"
+            for c, d in self._dropped.items() if d['camera'] or d['timeseries']
+        ]
+        if parts:
+            print("[ws-backlog] slow client(s): " + " | ".join(parts))
+            self._dropped.clear()
 
 
 class WebsocketHandlerPubSub(WebsocketHandler):
@@ -135,12 +180,12 @@ def run():
             _camera_debug_count[0] = 0
             _camera_debug_frame_count[0] = 0
             _camera_debug_last_print[0] = now
-        websocket.broadcast(data)
+        websocket.broadcast(data, priority='camera')
 
     def on_timeseries(topic, data):
         active_session = value_server.get('active_session')
         if active_session and topic == f'/timeseries/{active_session}'.encode():
-            websocket.broadcast(data)
+            websocket.broadcast(data, priority='timeseries')
 
     sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
     sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
