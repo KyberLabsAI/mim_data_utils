@@ -35,7 +35,7 @@ class WebsocketHandler(WebSocket):
 
 class BinaryWebSocketServer(threading.Thread):
     def __init__(self, handler_cls, host='0.0.0.0', port=9001,
-                 video_backlog=30, ts_backlog=400):
+                 pointcloud_backlog=10, video_backlog=30, ts_backlog=400):
         super().__init__(daemon=True)  # run as daemon thread
         self.host = host
         self.port = port
@@ -45,17 +45,27 @@ class BinaryWebSocketServer(threading.Thread):
         handler_cls.ws_server = self
         # Prioritized backpressure. A viewer that can't keep up otherwise grows an
         # unbounded SimpleWebSocketServer sendq, so it keeps receiving old data and
-        # its lag grows without bound. We cap each client's queue depth, but at two
-        # levels against the same (shared) queue so lower-value data is shed first:
-        #   - camera/video frames drop once the queue passes `video_backlog` (low),
+        # its lag grows without bound. We cap each client's queue depth, but at
+        # three levels against the same (shared) queue so lower-value data is shed
+        # first:
+        #   - point clouds drop once the queue passes `pointcloud_backlog` (lowest;
+        #     heaviest payload, so shed first),
+        #   - camera/video frames drop past `video_backlog` (low),
         #   - timeseries frames drop only past `ts_backlog` (high).
-        # So under mild overload only video is dropped and the plots keep flowing;
-        # only when dropping all video still isn't enough does timeseries thin out.
-        # Both bound the lag and let the client self-heal once it drains.
+        # So under mild overload only point clouds are dropped; if that isn't
+        # enough, camera video thins out too; timeseries plots are protected until
+        # last. Each bounds the lag and lets the client self-heal once it drains.
         # (deque len/append are atomic, so no lock is needed here.)
+        self.pointcloud_backlog = pointcloud_backlog
         self.video_backlog = video_backlog
         self.ts_backlog = ts_backlog
-        self._dropped = {}          # client -> {'camera': n, 'timeseries': n}
+        # Per-priority send caps, keyed by the `priority` passed to broadcast().
+        self._caps = {
+            'pointcloud': pointcloud_backlog,
+            'camera': video_backlog,
+            'timeseries': ts_backlog,
+        }
+        self._dropped = {}          # client -> {priority: n}
         self._last_drop_log = 0.0
 
     @property
@@ -71,19 +81,20 @@ class BinaryWebSocketServer(threading.Thread):
     def broadcast(self, data: bytes, priority='timeseries'):
         """Send binary data to all clients, dropping for slow ones by priority.
 
+        priority='pointcloud' -> lowest: dropped once the client's queue passes
+                                 pointcloud_backlog (heaviest payload, shed first).
         priority='camera'     -> low: dropped once the client's queue passes
-                                 video_backlog (video is shed first).
+                                 video_backlog (video is shed next).
         priority='timeseries' -> high: dropped only past ts_backlog (protected;
-                                 thins out only when dropping video isn't enough).
+                                 thins out only when dropping the rest isn't enough).
         """
-        cap = self.video_backlog if priority == 'camera' else self.ts_backlog
+        cap = self._caps.get(priority, self.ts_backlog)
         for client in list(self.clients):  # list() to avoid set change during iteration
             try:
                 if len(client.sendq) >= cap:
                     # Client is behind at this priority level; drop to let it catch up.
-                    counts = self._dropped.setdefault(
-                        client, {'camera': 0, 'timeseries': 0})
-                    counts[priority] += 1
+                    counts = self._dropped.setdefault(client, {})
+                    counts[priority] = counts.get(priority, 0) + 1
                     continue
                 client.sendMessage(data)
             except Exception as e:
@@ -100,8 +111,9 @@ class BinaryWebSocketServer(threading.Thread):
         self._last_drop_log = now
         parts = [
             f"{getattr(c, 'address', c)} backlog={len(c.sendq)} "
-            f"video_dropped={d['camera']} ts_dropped={d['timeseries']}"
-            for c, d in self._dropped.items() if d['camera'] or d['timeseries']
+            f"pc_dropped={d.get('pointcloud', 0)} "
+            f"video_dropped={d.get('camera', 0)} ts_dropped={d.get('timeseries', 0)}"
+            for c, d in self._dropped.items() if any(d.values())
         ]
         if parts:
             print("[ws-backlog] slow client(s): " + " | ".join(parts))
@@ -182,12 +194,18 @@ def run():
             _camera_debug_last_print[0] = now
         websocket.broadcast(data, priority='camera')
 
+    def on_pointcloud(topic, data):
+        # Point clouds are the heaviest payload; broadcast at the lowest
+        # priority so a slow viewer sheds them before camera video.
+        websocket.broadcast(data, priority='pointcloud')
+
     def on_timeseries(topic, data):
         active_session = value_server.get('active_session')
         if active_session and topic == f'/timeseries/{active_session}'.encode():
             websocket.broadcast(data, priority='timeseries')
 
     sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
+    sub_pointcloud = ZmqSubscriber('/pointcloud/', callback=on_pointcloud)
     sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
 
     print("Publishing timeseries (Ctrl+C to stop)...")
@@ -197,6 +215,7 @@ def run():
     except KeyboardInterrupt:
         print("\nStopped.")
         sub_camera.close()
+        sub_pointcloud.close()
         sub_timeseries.close()
 
 

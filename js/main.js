@@ -13,7 +13,48 @@ function getOrCreateCamera(name) {
     if (cameras.has(name)) return cameras.get(name);
     let cam = new CameraPlayback(name, camerasContainer);
     cameras.set(name, cam);
+    // A newly-appearing source honors any saved "disabled" selection; new
+    // sources default to shown.
+    applyImageVisibility();
     return cam;
+}
+
+// --- Display filtering for image sources and 3D scene entries ---------------
+// Persisted as JSON arrays of DISABLED names, so a source not in the set
+// defaults to shown (new sources appear automatically). See openLayoutWindow().
+let disabledImageSources = new Set(JSON.parse(localStorage.getItem('disabledImageSources') || '[]'));
+let disabledPointClouds = new Set(JSON.parse(localStorage.getItem('disabledPointClouds') || '[]'));
+// All non-point-cloud 3D objects (meshes, plane, ...) collapse to one toggle.
+let sceneObjectsHidden = localStorage.getItem('sceneObjectsHidden') === 'true';
+
+// A scene entry is a streamed point cloud iff it exposes addFrame() (PointCloud3D).
+function isPointCloudEntry(entry) {
+    return entry && typeof entry.addFrame === 'function';
+}
+
+function applyImageVisibility() {
+    cameras.forEach(cam => {
+        cam.container.style.display = disabledImageSources.has(cam.name) ? 'none' : '';
+    });
+}
+
+function applySceneVisibility() {
+    if (typeof scene === 'undefined' || !scene.objects) return;
+    scene.objects.forEach((entry, name) => {
+        let obj = entry.getObject && entry.getObject();
+        if (!obj) return;
+        if (isPointCloudEntry(entry)) {
+            obj.visible = !disabledPointClouds.has(name);
+        } else {
+            obj.visible = !sceneObjectsHidden;
+        }
+    });
+}
+
+function persistVisibility() {
+    localStorage.setItem('disabledImageSources', JSON.stringify([...disabledImageSources]));
+    localStorage.setItem('disabledPointClouds', JSON.stringify([...disabledPointClouds]));
+    localStorage.setItem('sceneObjectsHidden', sceneObjectsHidden ? 'true' : 'false');
 }
 
 function clearAllCameras() {
@@ -264,23 +305,229 @@ function applyPanelLayout(layoutText, persist = true) {
     forcePlotRefresh = true;
 }
 
-async function setPanelLayoutPrompt() {
-    let description = [
-        'Available panels: t, 3d, img',
-        'Operators: "|" horizontal, "/" vertical',
-        'Use parentheses for grouping.',
-        'Examples: t|3d/img, t|(3d/img), (t|img)/3d',
-    ].join('\n');
+const PANEL_LAYOUT_LEGEND = [
+    'Panels: t (plots), 3d (viewer), img (images)',
+    'Operators: "|" horizontal, "/" vertical',
+    'Grouping: ( )',
+    'Examples: t|3d/img   t|(3d/img)   (t|img)/3d',
+].join('\n');
 
-    let entered = await customPrompt(`${description}\n\nEnter panel layout:`, panelLayoutValue);
-    if (entered === null) {
+// Strip the internal '3d/' prefix that Scene.to_static_dict adds, for display.
+function sceneDisplayName(name) {
+    return name.startsWith('3d/') ? name.slice(3) : name;
+}
+
+// Local helper: a titled `.toggle-section` block.
+function makeLayoutSection(title) {
+    const section = document.createElement('div');
+    section.className = 'toggle-section';
+    const header = document.createElement('h4');
+    header.textContent = title;
+    section.appendChild(header);
+    return section;
+}
+
+// The currently-open layout panel element (null when closed). Also gates the
+// toggle behavior of the "Set Layout" button and the "l" hotkey.
+let layoutPanelEl = null;
+
+// Close the left-side layout panel, returning the borrowed trace controls to
+// their hidden holder so the toolbar references in main.js keep resolving.
+function closeLayoutWindow() {
+    if (!layoutPanelEl) return;
+    const holder = document.getElementById('tracesHolder');
+    holder.appendChild(layoutDom);
+    holder.appendChild(addOptions);
+    layoutPanelEl.remove();
+    layoutPanelEl = null;
+    // Let the views row reclaim the panel's width and force an immediate rerender.
+    document.body.classList.remove('layout-panel-open');
+    applyResize();
+}
+
+// Toggle the layout panel: open it if closed, close it if open.
+function toggleLayoutWindow(focusTraces = false) {
+    if (layoutPanelEl) closeLayoutWindow();
+    else openLayoutWindow(focusTraces);
+}
+
+// Align the panel to the views region (below the fixed top toolbar) so the
+// toolbar stays fully visible and only the lower content is covered/pushed.
+function positionLayoutPanel() {
+    if (!layoutPanelEl) return;
+    const pr = document.getElementById('panelRoot').getBoundingClientRect();
+    layoutPanelEl.style.top = pr.top + 'px';
+    layoutPanelEl.style.height = pr.height + 'px';
+}
+
+// Left-side layout panel. Sections top-to-bottom: "Layout" (panel-layout input +
+// syntax legend below it), "Traces" (the trace input + "Add trace..." dropdown,
+// reparented from the toolbar), "Visuals" (one checkbox per image source) and
+// "Scene" ("3D objects" group + one checkbox per streamed point cloud).
+// Checkboxes toggle visibility live; the layout line applies on Enter / Apply.
+// Pass focusTraces=true (e.g. from the "l" hotkey) to focus the trace input.
+function openLayoutWindow(focusTraces = false) {
+    if (layoutPanelEl) {
+        // Already open: just (re)focus the requested field.
+        if (focusTraces) { layoutDom.focus(); layoutDom.select(); }
         return;
     }
+    const dialog = document.createElement('div');
+    dialog.className = 'custom-dialog layout-panel';
+    layoutPanelEl = dialog;
 
-    try {
-        applyPanelLayout(entered, true);
-    } catch (err) {
-        customAlert(`Invalid layout: ${err.message}`);
+    // --- Layout section: input line first, legend below ---
+    const layoutSection = makeLayoutSection('Layout');
+
+    const inputRow = document.createElement('div');
+    inputRow.className = 'layout-input-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'prompt-input';
+    input.value = panelLayoutValue;
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'primary';
+    applyBtn.textContent = 'Apply';
+    inputRow.appendChild(input);
+    inputRow.appendChild(applyBtn);
+    layoutSection.appendChild(inputRow);
+
+    const errorLine = document.createElement('div');
+    errorLine.className = 'layout-error';
+    layoutSection.appendChild(errorLine);
+
+    const legend = document.createElement('div');
+    legend.className = 'msg layout-legend';
+    legend.textContent = PANEL_LAYOUT_LEGEND;
+    layoutSection.appendChild(legend);
+
+    dialog.appendChild(layoutSection);
+
+    function applyLayout() {
+        try {
+            applyPanelLayout(input.value, true);
+            errorLine.textContent = '';
+        } catch (err) {
+            errorLine.textContent = `Invalid layout: ${err.message}`;
+        }
+    }
+    applyBtn.addEventListener('click', applyLayout);
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); applyLayout(); }
+    });
+
+    // --- Traces section: reparent the toolbar's #layout input + #addOptions ---
+    const tracesSection = makeLayoutSection('Traces');
+    const tracesRow = document.createElement('div');
+    tracesRow.className = 'traces-row';
+    // Reparented live nodes keep their identity and all main.js event handlers.
+    tracesRow.appendChild(layoutDom);
+    tracesRow.appendChild(addOptions);
+    tracesSection.appendChild(tracesRow);
+    dialog.appendChild(tracesSection);
+
+    // --- Visuals section: one checkbox per image source ---
+    const visualsSection = document.createElement('div');
+    visualsSection.className = 'toggle-section';
+    const visualsHeader = document.createElement('h4');
+    visualsHeader.textContent = 'Visuals';
+    visualsSection.appendChild(visualsHeader);
+    const visualsList = document.createElement('div');
+    visualsList.className = 'toggle-list';
+    visualsSection.appendChild(visualsList);
+    dialog.appendChild(visualsSection);
+
+    // --- Scene section: "3D objects" group + one checkbox per point cloud ---
+    const sceneSection = document.createElement('div');
+    sceneSection.className = 'toggle-section';
+    const sceneHeader = document.createElement('h4');
+    sceneHeader.textContent = 'Scene';
+    sceneSection.appendChild(sceneHeader);
+    const sceneList = document.createElement('div');
+    sceneList.className = 'toggle-list';
+    sceneSection.appendChild(sceneList);
+    dialog.appendChild(sceneSection);
+
+    function makeRow(labelText, checked, onToggle) {
+        const label = document.createElement('label');
+        label.className = 'toggle-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = checked;
+        cb.addEventListener('change', () => onToggle(cb.checked));
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' ' + labelText));
+        return label;
+    }
+
+    function populate() {
+        // Visuals: sorted image source names.
+        visualsList.innerHTML = '';
+        const camNames = [...cameras.keys()].sort();
+        if (camNames.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'toggle-empty';
+            empty.textContent = 'No image sources yet';
+            visualsList.appendChild(empty);
+        } else {
+            camNames.forEach(name => {
+                visualsList.appendChild(makeRow(name, !disabledImageSources.has(name), on => {
+                    if (on) disabledImageSources.delete(name);
+                    else disabledImageSources.add(name);
+                    applyImageVisibility();
+                    persistVisibility();
+                }));
+            });
+        }
+
+        // Scene: the collapsed "3D objects" entry, then each point cloud.
+        sceneList.innerHTML = '';
+        sceneList.appendChild(makeRow('3D objects', !sceneObjectsHidden, on => {
+            sceneObjectsHidden = !on;
+            applySceneVisibility();
+            persistVisibility();
+        }));
+        const pcNames = [...scene.objects.entries()]
+            .filter(([, entry]) => isPointCloudEntry(entry))
+            .map(([name]) => name)
+            .sort();
+        pcNames.forEach(name => {
+            sceneList.appendChild(makeRow(sceneDisplayName(name), !disabledPointClouds.has(name), on => {
+                if (on) disabledPointClouds.delete(name);
+                else disabledPointClouds.add(name);
+                applySceneVisibility();
+                persistVisibility();
+            }));
+        });
+    }
+    populate();
+
+    // --- Footer: Close ---
+    const buttons = document.createElement('div');
+    buttons.className = 'buttons';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'primary';
+    closeBtn.textContent = 'Close';
+    buttons.appendChild(closeBtn);
+    dialog.appendChild(buttons);
+
+    closeBtn.addEventListener('click', closeLayoutWindow);
+    // Escape bubbles here from any focused field inside the panel.
+    dialog.addEventListener('keydown', e => { if (e.key === 'Escape') closeLayoutWindow(); });
+
+    document.body.appendChild(dialog);
+    // Shrink only the lower views row so the panel pushes it aside (the top
+    // toolbar stays fixed and full-width), then align the panel to that row and
+    // force an immediate rerender.
+    document.body.classList.add('layout-panel-open');
+    positionLayoutPanel();
+    applyResize();
+    if (focusTraces) {
+        layoutDom.focus();
+        layoutDom.select();
+    } else {
+        input.focus();
+        input.select();
     }
 }
 
@@ -612,6 +859,11 @@ window.addEventListener('keydown', evt => {
             marks.addMark(scene.time)
             evt.preventDefault();;
             break;
+        case 'l':
+        case 'L':
+            openLayoutWindow(true);
+            evt.preventDefault();
+            break;
     }
 })
 
@@ -638,6 +890,17 @@ function freeze(newValue) {
 
 let drawCounter = 0;
 let shouldResize = true; // Force resize on first draw.
+
+// Re-fit the plots and 3D scene to the current container size and flag a full
+// plot refresh. Safe to call synchronously (e.g. right after a resize) — it does
+// not touch the requestAnimationFrame loop.
+function applyResize() {
+    let width = domPlots.clientWidth;
+    plots.forEach(p => p.updateSize(width, 300));
+    scene.resize();
+    forcePlotRefresh = true;
+}
+
 let draw = () => {
     requestAnimationFrame(draw);
 
@@ -648,10 +911,7 @@ let draw = () => {
 
     if (shouldResize) {
         shouldResize = false;
-        let width = domPlots.clientWidth;
-        plots.forEach(p => p.updateSize(width, 300));
-        scene.resize();
-        forcePlotRefresh = true;
+        applyResize();
     }
 
     if (isPlotDisplayed()) {
@@ -672,12 +932,17 @@ let draw = () => {
         if (typeof _imgDebug !== 'undefined') {
             _imgDebug.lastSyncTime = absTime;
         }
-        cameras.forEach(cam => cam.syncToTime(absTime));
+        cameras.forEach(cam => {
+            if (disabledImageSources.has(cam.name)) return;
+            cam.syncToTime(absTime);
+        });
     }
 }
 
 window.addEventListener('resize', (evt) => {
-    shouldResize = true;
+    positionLayoutPanel();
+    // Force a rerender right after the resize instead of waiting for the next frame.
+    applyResize();
 });
 
 function firstNewData() {
@@ -726,6 +991,10 @@ try {
     console.warn('Invalid saved panel layout, using default:', err);
     applyPanelLayout(DEFAULT_PANEL_LAYOUT, true);
 }
+
+// Apply any saved per-source display filters once the scene/cameras exist.
+applyImageVisibility();
+applySceneVisibility();
 
 firstNewData();
 draw();

@@ -56,6 +56,104 @@ const _dialogCSS = `
     color: white;
     border-color: #3a7bc8;
 }
+/* Left-docked layout panel (toggled by the "Set Layout" button / "l" hotkey). */
+.custom-dialog.layout-panel {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100vh;
+    width: var(--layout-panel-width, 360px);
+    box-sizing: border-box;
+    overflow: auto;
+    background: #eef0f2;
+    border: none;
+    border-right: 1px solid #888;
+    border-radius: 0;
+    box-shadow: none;
+    text-align: left;
+    z-index: 10000;
+}
+.layout-panel .msg {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: #333;
+}
+.custom-dialog .layout-input-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.custom-dialog .layout-input-row input[type=text] {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+}
+.custom-dialog .layout-input-row button {
+    flex: 0 0 auto;
+}
+.custom-dialog .layout-error {
+    color: #c0392b;
+    font-size: 12px;
+    min-height: 1em;
+    margin-bottom: 8px;
+}
+.custom-dialog .toggle-section {
+    border-top: 1px solid #ddd;
+    margin-top: 8px;
+    padding-top: 8px;
+}
+.custom-dialog .toggle-section:first-child {
+    border-top: none;
+    margin-top: 0;
+    padding-top: 0;
+}
+.custom-dialog .layout-legend {
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+.custom-dialog .traces-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+}
+.custom-dialog .traces-row input[type=text] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    font-size: 14px;
+    border: 1px solid #aaa;
+    border-radius: 3px;
+}
+/* Keep the "Add trace..." dropdown compact and left-aligned below the input. */
+.custom-dialog .traces-row select {
+    align-self: flex-start;
+}
+.custom-dialog .toggle-section h4 {
+    margin: 0 0 6px 0;
+    font-size: 13px;
+}
+.custom-dialog .toggle-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 30vh;
+    overflow: auto;
+}
+.custom-dialog .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.custom-dialog .toggle-row input[type=checkbox] {
+    margin: 0;
+}
+.custom-dialog .toggle-empty {
+    font-size: 12px;
+    color: #888;
+    font-style: italic;
+}
 `;
 
 // Inject CSS once

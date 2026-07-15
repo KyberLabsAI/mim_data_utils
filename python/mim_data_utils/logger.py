@@ -17,7 +17,12 @@ import multiprocessing
 from .scene import RawMesh, Scene, PointCloud
 from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
 
-_CAMERA_TYPES = ('image', 'video_segment', 'depth')
+# Item types routed to the low-priority '/camera/' publisher (video frames).
+_CAMERA_TYPES = ('image', 'video_segment')
+# Point-cloud (depth) frames go on their own '/pointcloud/' publisher so the
+# server can shed them independently — they're the heaviest payload, so under
+# backpressure they should drop before camera video and long before timeseries.
+_POINTCLOUD_TYPES = ('depth',)
 
 _SESSION_WORDS = [
     'red', 'blue', 'green', 'gold', 'silver', 'amber', 'coral', 'jade',
@@ -192,6 +197,7 @@ class WebsocketWriter:
         self.session_name = None
         self.publisher = None
         self.camera_publisher = None
+        self.pointcloud_publisher = None
         self.num_connected_clients = None
         self._lock = threading.RLock()
 
@@ -201,12 +207,15 @@ class WebsocketWriter:
 
             self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
             self.camera_publisher = ZmqPublisher('/camera/', sndhwm=2)
+            self.pointcloud_publisher = ZmqPublisher('/pointcloud/', sndhwm=2)
             self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
             if not self.publisher.wait_connected():
                 raise ConnectionError('Timeseries publisher failed to connect to ZMQ broker')
             if not self.camera_publisher.wait_connected():
                 raise ConnectionError('Camera publisher failed to connect to ZMQ broker')
+            if not self.pointcloud_publisher.wait_connected():
+                raise ConnectionError('Point cloud publisher failed to connect to ZMQ broker')
 
     def set_session(self, name):
         with self._lock:
@@ -225,13 +234,24 @@ class WebsocketWriter:
     _log_debug_max_img_age = 0
 
     def log(self, data):
-        # Pack outside the lock to keep the critical section short.
+        # Pack outside the lock to keep the critical section short. Split into
+        # three priority streams (camera video / point cloud / everything else)
+        # so the server can shed each independently under backpressure.
         camera_items = [d for d in data if d.get('type') in _CAMERA_TYPES]
-        other_items = [d for d in data if d.get('type') not in _CAMERA_TYPES]
+        pointcloud_items = [d for d in data if d.get('type') in _POINTCLOUD_TYPES]
+        other_items = [
+            d for d in data
+            if d.get('type') not in _CAMERA_TYPES
+            and d.get('type') not in _POINTCLOUD_TYPES
+        ]
 
         camera_bytes = (
             ormsgpack.packb(camera_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
             if camera_items else None
+        )
+        pointcloud_bytes = (
+            ormsgpack.packb(pointcloud_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+            if pointcloud_items else None
         )
         other_bytes = (
             ormsgpack.packb(other_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
@@ -269,6 +289,8 @@ class WebsocketWriter:
             self.last_data = data
             if camera_bytes is not None:
                 self.camera_publisher.send(camera_bytes)
+            if pointcloud_bytes is not None:
+                self.pointcloud_publisher.send(pointcloud_bytes)
             if other_bytes is not None:
                 self.publisher.send(other_bytes)
 
@@ -288,6 +310,9 @@ class WebsocketWriter:
             if getattr(self, 'camera_publisher', None):
                 self.camera_publisher.close()
                 self.camera_publisher = None
+            if getattr(self, 'pointcloud_publisher', None):
+                self.pointcloud_publisher.close()
+                self.pointcloud_publisher = None
 
     def wait_for_client(self, timeout_s=5):
         tic = time.time()

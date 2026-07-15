@@ -601,6 +601,10 @@ class Scene3D {
 
         // Force objects to get re-positioned.
         this.lastPoseUpdateTime = null;
+
+        // Honor any saved display filter for a newly-registered object (the
+        // app owns this state; guard so scene3d.js stays usable standalone).
+        if (typeof applySceneVisibility === 'function') applySceneVisibility();
     }
 
     setTime(time) {
