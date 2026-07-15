@@ -3,16 +3,16 @@ class PointDataStore {
         this.maxFrames = maxFrames || 200;
         this.times = [];
         this.depths = [];        // Uint8Array (raw u16 little-endian) views
-        this.rgbUrls = [];       // object URL string or null
+        this.rgbBytes = [];      // Uint8Array of compressed JPEG bytes, or null
         this.depthScales = [];   // number or null (per-frame override)
         this.intrinsicsList = []; // object or null
     }
 
     addFrame(time, depthBytes, rgbBytes, depthScale, intrinsics) {
-        let rgbUrl = null;
-        if (rgbBytes) {
-            rgbUrl = URL.createObjectURL(new Blob([rgbBytes], {type: 'image/jpeg'}));
-        }
+        // Keep the compressed RGB bytes; decoding is deferred to display time via
+        // a shared JpegFrameDecoder (see PointCloud3D). Creating a Blob + object
+        // URL here, per frame, churned the GC — the same bug as ImageStore had.
+        const rgbVal = rgbBytes || null;
         const depthScaleVal = depthScale != null ? depthScale : null;
         const intrVal = intrinsics != null ? intrinsics : null;
 
@@ -29,24 +29,22 @@ class PointDataStore {
             idx = lo;
             this.times.splice(idx, 0, time);
             this.depths.splice(idx, 0, depthBytes);
-            this.rgbUrls.splice(idx, 0, rgbUrl);
+            this.rgbBytes.splice(idx, 0, rgbVal);
             this.depthScales.splice(idx, 0, depthScaleVal);
             this.intrinsicsList.splice(idx, 0, intrVal);
         } else {
             this.times.push(time);
             this.depths.push(depthBytes);
-            this.rgbUrls.push(rgbUrl);
+            this.rgbBytes.push(rgbVal);
             this.depthScales.push(depthScaleVal);
             this.intrinsicsList.push(intrVal);
         }
 
         // Evict oldest frames if over limit
         while (this.times.length > this.maxFrames) {
-            const oldUrl = this.rgbUrls[0];
-            if (oldUrl) URL.revokeObjectURL(oldUrl);
             this.times.shift();
             this.depths.shift();
-            this.rgbUrls.shift();
+            this.rgbBytes.shift();
             this.depthScales.shift();
             this.intrinsicsList.shift();
         }
@@ -67,17 +65,16 @@ class PointDataStore {
         return {
             time: times[lo],
             depth: this.depths[lo],
-            rgbUrl: this.rgbUrls[lo],
+            rgbBytes: this.rgbBytes[lo],
             depthScale: this.depthScales[lo],
             intrinsics: this.intrinsicsList[lo],
         };
     }
 
     clear() {
-        this.rgbUrls.forEach(url => { if (url) URL.revokeObjectURL(url); });
         this.times = [];
         this.depths = [];
-        this.rgbUrls = [];
+        this.rgbBytes = [];
         this.depthScales = [];
         this.intrinsicsList = [];
     }

@@ -15,12 +15,24 @@ class CameraPlayback {
         this.videoEl.playsInline = true;
         this.videoEl.style.display = 'none';
 
-        this.imgEl = document.createElement('img');
-        this.imgEl.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'%3E%3Crect width='1920' height='1080' fill='%23888'/%3E%3Ctext x='960' y='540' text-anchor='middle' dominant-baseline='central' font-family='sans-serif' font-size='48' fill='%23fff'%3ENo Image%3C/text%3E%3C/svg%3E";
+        // Frames are drawn onto a canvas via ImageBitmap rather than assigned
+        // to an <img> src. This avoids a Blob + object URL per frame and lets us
+        // decode each displayed frame exactly once (via the shared JpegFrameDecoder).
+        this.canvasEl = document.createElement('canvas');
+        this.canvasEl.className = 'camera-canvas';
+        this.ctx = this.canvasEl.getContext('2d');
+        this.decoder = new JpegFrameDecoder(bitmap => {
+            if (this.canvasEl.width !== bitmap.width ||
+                this.canvasEl.height !== bitmap.height) {
+                this.canvasEl.width = bitmap.width;
+                this.canvasEl.height = bitmap.height;
+            }
+            this.ctx.drawImage(bitmap, 0, 0);
+        });
 
         this.container.appendChild(label);
         this.container.appendChild(this.videoEl);
-        this.container.appendChild(this.imgEl);
+        this.container.appendChild(this.canvasEl);
 
         // Insert sorted by name
         let inserted = false;
@@ -50,14 +62,14 @@ class CameraPlayback {
     syncToTime(absTime) {
         if (this.videoStore.isVideoReadyForTime(absTime)) {
             this.videoEl.style.display = '';
-            this.imgEl.style.display = 'none';
+            this.canvasEl.style.display = 'none';
             this.videoStore.syncToTime(absTime);
         } else {
             this.videoEl.style.display = 'none';
-            this.imgEl.style.display = '';
-            let url = this.imageStore.getFrameAtTime(absTime);
-            if (url && this.imgEl.src !== url) {
-                this.imgEl.src = url;
+            this.canvasEl.style.display = '';
+            let frame = this.imageStore.getFrameAtTime(absTime);
+            if (frame) {
+                this.decoder.request(frame.time, frame.bytes);
             }
             if (this.videoStore.hasVideoForTime(absTime)) {
                 this.videoStore.syncToTime(absTime);
@@ -122,6 +134,10 @@ class CameraPlayback {
     clear() {
         this.imageStore.clear();
         this.videoStore.clear();
+        this.decoder.reset();  // cancel any in-flight decode
+        if (this.ctx) {
+            this.ctx.clearRect(0, 0, this.canvasEl.width, this.canvasEl.height);
+        }
     }
 
     remove() {

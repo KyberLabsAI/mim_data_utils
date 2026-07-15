@@ -41,23 +41,19 @@ class PointCloud3D {
         const defaultColor = this._parseColor(this.material.color);
         this.defaultColor = defaultColor;
 
-        // RGB decode state — async via <img> + offscreen canvas.
+        // RGB decode state — decoded lazily via the shared JpegFrameDecoder into
+        // an offscreen canvas, then read back as pixels to colour the points.
         this._rgbCanvas = document.createElement('canvas');
         this._rgbCanvas.width = this.width;
         this._rgbCanvas.height = this.height;
         this._rgbCtx = this._rgbCanvas.getContext('2d', { willReadFrequently: true });
-        this._rgbImg = new Image();
         this._rgbReady = false;
         this._rgbPixels = null;
-        this._rgbPendingUrl = null;
-        this._rgbImg.onload = () => {
-            this._rgbCtx.drawImage(this._rgbImg, 0, 0, this.width, this.height);
+        this._rgbDecoder = new JpegFrameDecoder(bitmap => {
+            this._rgbCtx.drawImage(bitmap, 0, 0, this.width, this.height);
             this._rgbPixels = this._rgbCtx.getImageData(0, 0, this.width, this.height).data;
             this._rgbReady = true;
-        };
-        this._rgbImg.onerror = (e) => {
-            console.warn(`PointCloud3D '${this.name}': RGB JPEG decode failed`, e);
-        };
+        });
     }
 
     _parseColor(color) {
@@ -115,18 +111,17 @@ class PointCloud3D {
         if (!frame) return;
         if (frame.time === this.lastRenderedTime) return;
 
-        // Kick off RGB decode if this frame has a new URL. We intentionally
-        // do NOT reset _rgbReady here: at live frame rates new URLs arrive
-        // faster than the browser can decode JPEGs, and flipping the flag
-        // on every frame would leave the points rendering the default
-        // colour forever. Instead we keep the last successfully-decoded
-        // image until a newer one finishes loading.
-        if (frame.rgbUrl && frame.rgbUrl !== this._rgbPendingUrl) {
-            this._rgbPendingUrl = frame.rgbUrl;
-            this._rgbImg.src = frame.rgbUrl;
-        } else if (!frame.rgbUrl) {
+        // Kick off RGB decode if this frame has RGB. We intentionally do NOT
+        // reset _rgbReady here: at live frame rates new frames arrive faster
+        // than the browser can decode JPEGs, and flipping the flag on every
+        // frame would leave the points rendering the default colour forever.
+        // Instead we keep the last successfully-decoded image until a newer one
+        // finishes (the decoder delivers only the latest, deduped by time).
+        if (frame.rgbBytes) {
+            this._rgbDecoder.request(frame.time, frame.rgbBytes);
+        } else {
             // No RGB for this frame — reset state so the default colour is used.
-            this._rgbPendingUrl = null;
+            this._rgbDecoder.reset();
             this._rgbReady = false;
             this._rgbPixels = null;
         }

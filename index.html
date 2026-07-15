@@ -89,10 +89,12 @@
     position: relative;
 }
 
-.camera-panel img {
+.camera-panel img,
+.camera-panel canvas {
     width: 100%;
     height: 100%;
     object-fit: contain;
+    background: #888;
 }
 
 .camera-panel video {
@@ -261,6 +263,7 @@
   <script src="js/plot.js"></script>
   <script src="js/traces.js"></script>
   <script src="js/data_sources.js"></script>
+  <script src="js/jpeg_frame_decoder.js"></script>
   <script src="js/point_data_store.js"></script>
   <script src="js/point_cloud.js"></script>
   <script src="js/scene3d.js"></script>

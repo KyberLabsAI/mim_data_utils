@@ -227,6 +227,8 @@ class Recorder:
                  with_timeseries=True):
         self.path = str(path)
         self.url = f'ws://{host}:{port}/'
+        self._host = host
+        self._port = port
         self.compression_level = compression_level
         self.max_file_size_mb = max_file_size_mb
         self.embed_video = embed_video
@@ -398,8 +400,22 @@ class Recorder:
             self._ws_thread.join(timeout=3)
             self._ws_thread = None
 
+    def _capture_frames(self, suffix):
+        """Snapshot current camera images (shm color+depth + websocket JPEGs) next
+        to the recording, prefixed like the .zst with `suffix` (e.g. '_begin')."""
+        try:
+            try:
+                from . import capture  # package import
+            except ImportError:
+                import capture          # run-as-script (recorder.py's dir on sys.path)
+            p = Path(self.path)
+            capture.capture_frames(prefix=p.stem + suffix, out_dir=str(p.parent),
+                                   host=self._host, port=self._port)
+        except Exception as e:
+            print(f'[recorder] frame capture ({suffix}) failed: {e}')
+
     def start_recording(self):
-        """Start writing received messages to disk."""
+        """Start writing received messages to disk, and snapshot _begin frames."""
         if self._recording:
             return
 
@@ -412,9 +428,11 @@ class Recorder:
             stem = Path(self.path).with_suffix('')
             print(f'[recorder] Encoding H.265 video per camera to '
                   f'{stem}_<camera>.mp4 (opened when each stream starts)')
+        self._capture_frames('_begin')
 
-    def stop_recording(self):
-        """Stop writing and finalise the file."""
+    def stop_recording(self, capture_end=True):
+        """Stop writing and finalise the file; snapshot _end frames unless
+        `capture_end` is False (used by the [c] quick capture)."""
         if not self._recording:
             return
 
@@ -428,6 +446,9 @@ class Recorder:
             print(f'[recorder] Saved {self._messages_written} messages '
                   f'({self._bytes_written / (1024*1024):.1f} MB uncompressed, '
                   f'{disk_mb:.1f} MB on disk) to {self.path}')
+
+        if capture_end:
+            self._capture_frames('_end')
 
     @property
     def is_recording(self):
@@ -486,7 +507,8 @@ def main():
     rec.connect()
 
     print()
-    print('  [SPACE] Start/stop recording')
+    print('  [SPACE]  Start/stop a full recording (stores _begin/_end frames)')
+    print('  [c]      Capture current frames + 100 ms of data (no _end frames)')
     print('  [Ctrl+C] Exit')
     print()
 
@@ -515,6 +537,15 @@ def main():
                         # never overwrites a previous section.
                         rec.path = _fill_template(template)
                         rec.start_recording()
+
+                elif ch in ('c', 'C') and not rec.is_recording:
+                    # Quick capture: current frames (_begin) + ~100 ms of data,
+                    # then stop without _end frames.
+                    rec.path = _fill_template(template)
+                    rec.start_recording()
+                    time.sleep(0.1)
+                    rec.stop_recording(capture_end=False)
+                    print('  Captured frames + 100 ms. Press [SPACE] or [c].')
 
                 elif ch == '\x03':  # Ctrl+C (fallback if ISIG is disabled)
                     raise KeyboardInterrupt

@@ -2,11 +2,15 @@ class ImageStore {
     constructor(maxFrames) {
         this.maxFrames = maxFrames || 5000;
         this.times = [];
-        this.urls = [];
+        this.blobs = [];   // Uint8Array of compressed JPEG bytes; decoded lazily on display.
     }
 
     addFrame(time, binaryData) {
-        let url = URL.createObjectURL(new Blob([binaryData], {type: 'image/jpeg'}));
+        // Store only the compressed bytes. Previously this created a Blob + an
+        // object URL for *every* received frame (30-60/s) and retained them for
+        // the whole ring buffer, churning ArrayBuffers through the GC and
+        // forcing the <img> element to re-decode on each src change. Decoding
+        // now happens lazily, once per displayed frame (see CameraPlayback).
 
         // Insert in sorted order (usually appending at end since times are monotonic)
         let idx = this.times.length;
@@ -20,17 +24,16 @@ class ImageStore {
             }
             idx = lo;
             this.times.splice(idx, 0, time);
-            this.urls.splice(idx, 0, url);
+            this.blobs.splice(idx, 0, binaryData);
         } else {
             this.times.push(time);
-            this.urls.push(url);
+            this.blobs.push(binaryData);
         }
 
         // Evict oldest frames if over limit
         while (this.times.length > this.maxFrames) {
-            URL.revokeObjectURL(this.urls[0]);
             this.times.shift();
-            this.urls.shift();
+            this.blobs.shift();
         }
     }
 
@@ -46,7 +49,9 @@ class ImageStore {
             if (times[mid] <= time) lo = mid;
             else hi = mid - 1;
         }
-        return this.urls[lo];
+        // Return the frame's stable timestamp alongside its bytes so the
+        // consumer can dedupe by time (index is not stable across eviction).
+        return { time: times[lo], bytes: this.blobs[lo] };
     }
 
     evictRange(timeStart, timeEnd) {
@@ -71,16 +76,12 @@ class ImageStore {
         if (start >= this.times.length || this.times[start] > timeEnd) return;
         let end = lo + 1;
 
-        for (let i = start; i < end; i++) {
-            URL.revokeObjectURL(this.urls[i]);
-        }
         this.times.splice(start, end - start);
-        this.urls.splice(start, end - start);
+        this.blobs.splice(start, end - start);
     }
 
     clear() {
-        this.urls.forEach(url => URL.revokeObjectURL(url));
         this.times = [];
-        this.urls = [];
+        this.blobs = [];
     }
 }

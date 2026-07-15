@@ -203,23 +203,18 @@ class SeriesData {
     }
 
     firstTime() {
-        let minTime = this.maxTime;
-        this.chunks.forEach(chunk => {
-            if (chunk.timeFrom < minTime) {
-                minTime = chunk.timeFrom;
-            }
-        });
-        return minTime;
+        // Chunks are chronological and eviction shifts from the front, so the
+        // oldest live time is the first chunk's timeFrom. O(1) instead of
+        // scanning every chunk (this is called several times per frame).
+        let firstChunk = this.chunks[0];
+        return firstChunk ? firstChunk.timeFrom : this.maxTime;
     }
 
     lastTime() {
-        let maxTime = 0;
-        this.chunks.forEach(chunk => {
-            if (chunk.timeTo > maxTime) {
-                maxTime = chunk.timeTo;
-            }
-        });
-        return maxTime;
+        // maxTime is maintained incrementally in record(); no need to rescan
+        // every chunk. This scan used to dominate the frame (~30% of CPU) once
+        // the ring buffer filled up, causing the viewer to stutter over time.
+        return this.maxTime;
     }
 
     record(time, data) {
