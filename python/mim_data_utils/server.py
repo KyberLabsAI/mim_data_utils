@@ -152,7 +152,10 @@ def run():
 
     value_server = ZmqRemoteKeyValueServer({
         'websocket_num_clients': 0,
-        'active_session': None
+        # Sessions are disabled for now (see logger._generate_session_name):
+        # all loggers use the fixed 'FooBarSession', so default the filter to
+        # it — timeseries flow even if no producer ever activates a session.
+        'active_session': 'FooBarSession'
     }, on_update=on_value_update)
 
     # Shared Zmq value to keep track of connected websockets.

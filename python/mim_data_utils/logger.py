@@ -37,7 +37,10 @@ _SESSION_WORDS = [
 ]
 
 def _generate_session_name():
-    return '-'.join(random.sample(_SESSION_WORDS, 3))
+    # Multi-session support is disabled for now: every logger shares one fixed
+    # session name so a restarting producer can't steal or orphan the viewer's
+    # active session. Random names: '-'.join(random.sample(_SESSION_WORDS, 3))
+    return 'FooBarSession'
 
 
 class FileLoggerWriter:

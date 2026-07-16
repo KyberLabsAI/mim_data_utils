@@ -562,7 +562,7 @@ class Scene3D {
         // Recursively remove children first
         while (object.children.length > 0) {
           const child = object.children[0]; // Get the first child
-          removeObjectAndChildren(child, scene); // Recursively call this function for the child
+          this._removeObjectAndChildren(child); // Recursively remove the child
         }
 
         // Now that all children are removed, remove the object itself
@@ -596,6 +596,15 @@ class Scene3D {
     }
 
     addObject(obj) {
+        // Re-registration (e.g. a producer restarted and sent its static scene
+        // again): drop the existing object first so it doesn't linger in the
+        // scene next to the new one.
+        const existing = this.objects.get(obj.name);
+        if (existing) {
+            this._removeObjectAndChildren(existing.getObject());
+            this.objects.delete(obj.name);
+        }
+
         this.objects.set(obj.name, obj);
         this.scene.add(obj.getObject());
 
