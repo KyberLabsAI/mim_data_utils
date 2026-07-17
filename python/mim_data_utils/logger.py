@@ -53,6 +53,13 @@ class FileLoggerWriter:
         self.child = child
         self.swap_lock = threading.Lock()
 
+    def set_session(self, name):
+        # Sessions only matter for the websocket viewer; the file format stores
+        # the session name per sample. Accept the call so Logger can run with a
+        # plain file writer (headless logging).
+        if self.child:
+            self.child.set_session(name)
+
     def init(self):
         self.is_full = False
         self.fh = open(self.path, "wb+")
