@@ -590,9 +590,22 @@ class Scene3D {
             this._removeObjectAndChildren(entry.getObject());
         }
 
+        this.objects.clear();
         this.viewers = this.viewers.slice(0, 1); // Only keep the first viewer.
 
         this.resize();
+    }
+
+    removeObject(name) {
+        const entry = this.objects.get(name);
+        if (!entry) {
+            return false;
+        }
+
+        this._removeObjectAndChildren(entry.getObject());
+        this.objects.delete(name);
+
+        return true;
     }
 
     addObject(obj) {

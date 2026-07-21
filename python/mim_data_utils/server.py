@@ -13,6 +13,82 @@ from kyber_utils.zeromq import (
     ZmqRemoteValue,
 )
 
+class SetupRegistry:
+    """Per-session store of the setups a viewer needs to render the stream.
+
+    Producers register their 3d scene objects and viewer settings once (see
+    `Logger.register_setup` / `Logger.register_setting`). Keeping them here is
+    what lets a viewer that connects late -- or simply reloads the page -- get
+    the meshes and point clouds it would otherwise have missed.
+
+    Entries are keyed, so re-registering replaces the previous version. They
+    live until explicitly removed or until the session is cleared: a producer
+    disconnecting does not unload its scene, just as the timeseries and images
+    it already sent stay in the viewer.
+    """
+
+    def __init__(self):
+        # session -> {'setting': {key: item}, 'scene': {key: item}}. Settings
+        # are replayed before scene objects (they create the viewers/layout the
+        # objects go into) and insertion order is kept within each kind.
+        self.sessions = {}
+        self._lock = threading.Lock()
+
+    def _kinds(self, session):
+        return self.sessions.setdefault(
+            session, {'setting': {}, 'scene': {}})
+
+    def apply(self, item):
+        """Fold one setup item into the registry.
+
+        Returns the items to forward to the viewers that are already connected
+        (empty if nothing changed).
+        """
+        op = item.get('op')
+        session = item.get('session')
+
+        with self._lock:
+            if op == 'clear':
+                self.sessions.pop(session, None)
+                return [item]
+
+            kinds = self._kinds(session)
+            store = kinds.get(item.get('kind'))
+            if store is None:
+                print(f"[setup] ignoring unknown kind: {item.get('kind')}")
+                return []
+
+            key = item.get('key')
+            if op == 'remove':
+                return [item] if store.pop(key, None) is not None else []
+
+            if op == 'set':
+                # Re-registering the exact same setting (a producer restarting,
+                # say) must not be re-applied -- '3dCamera' would add a second
+                # 3d viewer every time.
+                if store.get(key) == item:
+                    return []
+                store[key] = item
+                return [item]
+
+            print(f"[setup] ignoring unknown op: {op}")
+            return []
+
+    def snapshot(self, session):
+        """All setups of `session`, packed and ready to send to a new viewer."""
+        with self._lock:
+            kinds = self.sessions.get(session)
+            if not kinds:
+                return None
+
+            items = list(kinds['setting'].values()) + list(kinds['scene'].values())
+
+        if not items:
+            return None
+
+        return ormsgpack.packb(items)
+
+
 class WebsocketHandler(WebSocket):
     ws_server = None  # set as class attribute by BinaryWebSocketServer
 
@@ -25,6 +101,9 @@ class WebsocketHandler(WebSocket):
     def handleConnected(self):
         print(f"Client connected: {self.address}")
         if self.ws_server:
+            # Replay the registered setups *before* joining the broadcast set,
+            # so no live data can overtake the setup it depends on.
+            self.ws_server.send_setups(self)
             self.ws_server.clients.add(self)
 
     def handleClose(self):
@@ -35,7 +114,8 @@ class WebsocketHandler(WebSocket):
 
 class BinaryWebSocketServer(threading.Thread):
     def __init__(self, handler_cls, host='0.0.0.0', port=9001,
-                 pointcloud_backlog=10, video_backlog=30, ts_backlog=400):
+                 pointcloud_backlog=10, video_backlog=30, ts_backlog=400,
+                 setup_registry=None, active_session_fn=None):
         super().__init__(daemon=True)  # run as daemon thread
         self.host = host
         self.port = port
@@ -43,6 +123,10 @@ class BinaryWebSocketServer(threading.Thread):
         self._server = None
         self.handler_cls = handler_cls
         handler_cls.ws_server = self
+        # Registered setups replayed to every client on connect, and the way to
+        # find out which session's setups that is.
+        self.setup_registry = setup_registry
+        self.active_session_fn = active_session_fn
         # Prioritized backpressure. A viewer that can't keep up otherwise grows an
         # unbounded SimpleWebSocketServer sendq, so it keeps receiving old data and
         # its lag grows without bound. We cap each client's queue depth, but at
@@ -77,6 +161,21 @@ class BinaryWebSocketServer(threading.Thread):
         self._server = SimpleWebSocketServer(self.host, self.port, self.handler_cls, selectInterval=0.01)
         print(f"Websocket server running on ws://{self.host}:{self.port}")
         self._server.serveforever()
+
+    def send_setups(self, client):
+        """Send the active session's registered setups to a just-connected client."""
+        if self.setup_registry is None or self.active_session_fn is None:
+            return
+
+        try:
+            snapshot = self.setup_registry.snapshot(self.active_session_fn())
+            if snapshot is None:
+                return
+
+            client.sendMessage(snapshot)
+            print(f"[setup] replayed setups to {getattr(client, 'address', client)}")
+        except Exception:
+            traceback.print_exc()
 
     def broadcast(self, data: bytes, priority='timeseries'):
         """Send binary data to all clients, dropping for slow ones by priority.
@@ -161,7 +260,12 @@ def run():
     # Shared Zmq value to keep track of connected websockets.
     WebsocketHandlerPubSub.value_server = value_server
 
-    websocket = BinaryWebSocketServer(WebsocketHandlerPubSub, host='127.0.0.1', port=5678)
+    setup_registry = SetupRegistry()
+
+    websocket = BinaryWebSocketServer(
+        WebsocketHandlerPubSub, host='127.0.0.1', port=5678,
+        setup_registry=setup_registry,
+        active_session_fn=lambda: value_server.get('active_session'))
     websocket.start()
     time.sleep(0.1)  # Give the thread time to print
 
@@ -202,6 +306,22 @@ def run():
         # priority so a slow viewer sheds them before camera video.
         websocket.broadcast(data, priority='pointcloud')
 
+    def on_setup(topic, data):
+        # Setup items are rare and small enough to unpack here: the registry
+        # needs to see them so it can replay them to viewers connecting later.
+        try:
+            items = ormsgpack.unpackb(data)
+        except Exception:
+            traceback.print_exc()
+            return
+
+        changed = [out for item in items for out in setup_registry.apply(item)]
+
+        # Forward what actually changed, so viewers that are already open pick
+        # up new registrations live.
+        if changed:
+            websocket.broadcast(ormsgpack.packb(changed), priority='timeseries')
+
     def on_timeseries(topic, data):
         active_session = value_server.get('active_session')
         if active_session and topic == f'/timeseries/{active_session}'.encode():
@@ -210,6 +330,7 @@ def run():
     sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
     sub_pointcloud = ZmqSubscriber('/pointcloud/', callback=on_pointcloud)
     sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
+    sub_setup = ZmqSubscriber('/setup/', callback=on_setup)
 
     print("Publishing timeseries (Ctrl+C to stop)...")
     try:
@@ -220,6 +341,7 @@ def run():
         sub_camera.close()
         sub_pointcloud.close()
         sub_timeseries.close()
+        sub_setup.close()
 
 
 if __name__ == "__main__":

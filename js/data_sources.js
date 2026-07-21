@@ -40,6 +40,55 @@ function parseTimeSample(data) {
     return false;
 }
 
+// A setting is a viewer configuration the producer registered for the session.
+// It arrives both live and as part of the setup replay a reconnecting viewer
+// gets, so applying one must be idempotent.
+function applySetting(name, payload) {
+    switch (name) {
+        case '3dCamera':
+            scene.addViewer();
+            return false;
+
+        case '3dCameraLocation':
+            scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
+            return false;
+
+        case 'layout':
+            layoutDom.value = payload;
+            updateLayout();
+            return false;
+    }
+
+    console.warn('Unknown setting:', name);
+    return false;
+}
+
+// Registered setups: the 3d scene objects and viewer settings the server keeps
+// per session and replays whenever a viewer connects, so a page reload does not
+// lose the meshes and point clouds that were registered before it opened.
+function parseSetup(data) {
+    if (data.op === 'set') {
+        if (data.kind === 'scene') {
+            // Goes through traces so the existing Traces::recordStaticData
+            // handler in scene3d.js builds the Mesh3D / PointCloud3D.
+            traces.recordStaticData(data.key, data.payload);
+            return true;
+        } else if (data.kind === 'setting') {
+            return applySetting(data.name, data.payload);
+        }
+    } else if (data.op === 'remove') {
+        traces.staticData.delete(data.key);
+        scene.removeObject(data.key);
+        return true;
+    } else if (data.op === 'clear') {
+        traces.staticData.clear();
+        scene.clear();
+        return true;
+    }
+
+    return false;
+}
+
 function parsewebSocketData(data) {
     let relayout = false;
     let type = data.type;
@@ -83,6 +132,8 @@ function parsewebSocketData(data) {
         // If no PointCloud has been registered yet for this name, drop the
         // frame. The static registration is normally sent once before any
         // depth frame via logger.log_static(scene).
+    } else if (data.type == 'setup') {
+        relayout = parseSetup(data);
     } else if (data.type == 'marker') {
         let markerTime = parseFloat(data.time);
         let showSummary = data.show_summary === true;
@@ -101,21 +152,14 @@ function parsewebSocketData(data) {
                 relayout = true;
                 break;
 
-            case '3dCamera':
-                scene.addViewer();
-                break
-
-            case '3dCameraLocation':
-                scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
-                break
-
             case 'zoomReset':
                 freeZoom();
                 break;
 
-            case 'layout':
-                layoutDom.value = payload;
-                updateLayout();
+            default:
+                // Settings used to be sent as one-off commands; recorded files
+                // and older producers still do.
+                relayout = applySetting(data.name, payload) || relayout;
                 break;
         }
     }

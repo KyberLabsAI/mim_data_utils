@@ -1,6 +1,7 @@
 import os
 import time
 import random
+import uuid
 from pathlib import Path
 import numpy as np
 import threading
@@ -23,6 +24,11 @@ _CAMERA_TYPES = ('image', 'video_segment')
 # server can shed them independently — they're the heaviest payload, so under
 # backpressure they should drop before camera video and long before timeseries.
 _POINTCLOUD_TYPES = ('depth',)
+# Setup items (scene registrations and viewer settings) go on their own
+# '/setup/' publisher. The server unpacks and caches them per session so it can
+# replay them to a viewer that connects (or reloads) later; everything else
+# stays an opaque blob on the relay hot path.
+_SETUP_TYPES = ('setup',)
 
 _SESSION_WORDS = [
     'red', 'blue', 'green', 'gold', 'silver', 'amber', 'coral', 'jade',
@@ -59,6 +65,11 @@ class FileLoggerWriter:
         # plain file writer (headless logging).
         if self.child:
             self.child.set_session(name)
+
+    def session_action(self, data):
+        # Sessions only exist for the websocket viewer; nothing to do for a file.
+        if self.child:
+            self.child.session_action(data)
 
     def init(self):
         self.is_full = False
@@ -208,6 +219,7 @@ class WebsocketWriter:
         self.publisher = None
         self.camera_publisher = None
         self.pointcloud_publisher = None
+        self.setup_publisher = None
         self.num_connected_clients = None
         self._lock = threading.RLock()
 
@@ -218,6 +230,7 @@ class WebsocketWriter:
             self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
             self.camera_publisher = ZmqPublisher('/camera/', sndhwm=2)
             self.pointcloud_publisher = ZmqPublisher('/pointcloud/', sndhwm=2)
+            self.setup_publisher = ZmqPublisher('/setup/')
             self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
             if not self.publisher.wait_connected():
@@ -226,6 +239,8 @@ class WebsocketWriter:
                 raise ConnectionError('Camera publisher failed to connect to ZMQ broker')
             if not self.pointcloud_publisher.wait_connected():
                 raise ConnectionError('Point cloud publisher failed to connect to ZMQ broker')
+            if not self.setup_publisher.wait_connected():
+                raise ConnectionError('Setup publisher failed to connect to ZMQ broker')
 
     def set_session(self, name):
         with self._lock:
@@ -249,12 +264,18 @@ class WebsocketWriter:
         # so the server can shed each independently under backpressure.
         camera_items = [d for d in data if d.get('type') in _CAMERA_TYPES]
         pointcloud_items = [d for d in data if d.get('type') in _POINTCLOUD_TYPES]
+        setup_items = [d for d in data if d.get('type') in _SETUP_TYPES]
         other_items = [
             d for d in data
             if d.get('type') not in _CAMERA_TYPES
             and d.get('type') not in _POINTCLOUD_TYPES
+            and d.get('type') not in _SETUP_TYPES
         ]
 
+        setup_bytes = (
+            ormsgpack.packb(setup_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+            if setup_items else None
+        )
         camera_bytes = (
             ormsgpack.packb(camera_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
             if camera_items else None
@@ -297,6 +318,8 @@ class WebsocketWriter:
             if self.publisher is None:
                 self.init()
             self.last_data = data
+            if setup_bytes is not None:
+                self.setup_publisher.send(setup_bytes)
             if camera_bytes is not None:
                 self.camera_publisher.send(camera_bytes)
             if pointcloud_bytes is not None:
@@ -323,6 +346,9 @@ class WebsocketWriter:
             if getattr(self, 'pointcloud_publisher', None):
                 self.pointcloud_publisher.close()
                 self.pointcloud_publisher = None
+            if getattr(self, 'setup_publisher', None):
+                self.setup_publisher.close()
+                self.setup_publisher = None
 
     def wait_for_client(self, timeout_s=5):
         tic = time.time()
@@ -423,6 +449,11 @@ class Logger(threading.Thread):
         self.server = server
         self.session_name = _generate_session_name()
 
+        # Only identifies who registered a setup, for debugging. Registered
+        # setups outlive the producer: like the timeseries and images already
+        # in the viewer, a scene stays put when its producer goes away.
+        self.producer_id = uuid.uuid4().hex
+
         server.set_session(self.session_name)
 
         # When just publishing image / video, no need to make session active.
@@ -480,6 +511,7 @@ class Logger(threading.Thread):
         self.server.session_action({'type': 'activate', 'name': self.session_name})
 
     def clear(self, max_data=(5 * 60 * 1000)):
+        self.clear_setups()
         self.command('clear', {
             'maxData': max_data
         })
@@ -488,30 +520,78 @@ class Logger(threading.Thread):
         self.command('zoomReset', {})
 
     def command(self, name, payload):
+        """Send a one-off, non-persisted viewer command.
+
+        Use `register_setting` instead for anything that should survive a page
+        reload -- a command is only seen by the viewers connected right now.
+        """
         self._append_log({
             'type': 'command',
             'name': name,
             'payload': payload
         })
 
+    # --- Registered setups -------------------------------------------------
+    # Setups are the part of the stream that a viewer needs in order to make
+    # sense of everything else: the 3d scene objects and the viewer settings.
+    # The server caches them per session and replays them to every viewer that
+    # connects, so opening or reloading the page mid-session still shows the
+    # meshes and point clouds. Entries are keyed, so re-registering replaces
+    # the previous version. They stay until explicitly removed or cleared --
+    # a producer that stops publishing leaves its scene in place, the same way
+    # the timeseries and images it already sent stay in the viewer.
+
+    def _setup_action(self, op, **fields):
+        self._append_log({
+            'type': 'setup',
+            'op': op,
+            'session': self.session_name,
+            'producer': self.producer_id,
+            **fields
+        })
+
+    def register_setup(self, obj, silent_error=False):
+        """Register 3d scene objects (meshes, point clouds) for this session.
+
+        Takes a `Scene` (or a dict of name -> loggable object) and registers one
+        entry per object under its '3d/<name>' key.
+        """
+        if not isinstance(obj, dict):
+            obj = obj.to_static_dict()
+
+        for key, payload in self._log_dict(obj, silent_error).items():
+            self._setup_action('set', kind='scene', key=key, payload=payload)
+
+    def unregister_setup(self, key):
+        """Remove a single registered scene object, e.g. '3d/table'."""
+        self._setup_action('remove', kind='scene', key=key)
+
+    def register_setting(self, key, name, payload):
+        """Register a viewer setting that is re-applied on every viewer connect.
+
+        `key` identifies the setting in the registry (re-registering replaces
+        it), `name` is the viewer-side action to run with `payload`.
+        """
+        self._setup_action('set', kind='setting', key=key, name=name,
+                           payload=payload)
+
+    def clear_setups(self):
+        """Drop all registered setups of this session (all producers)."""
+        self._setup_action('clear')
+
     def add_camera(self):
-        self.command('3dCamera', {})
+        self.register_setting('3dCamera', '3dCamera', {})
 
     def camera_location(self, camera_index, position, look_at):
-        self.command('3dCameraLocation', {
+        self.register_setting(f'3dCameraLocation/{camera_index}',
+                              '3dCameraLocation', {
             'cameraIndex': camera_index,
             'position': position,
             'lookAt': look_at
         })
 
     def layout(self, layout_def):
-        self.command('layout', layout_def)
-
-    def log_static(self, obj, silent_error=False):
-        if not isinstance(obj, dict):
-            obj = obj.to_static_dict()
-
-        self.log(obj, 'static', silent_error)
+        self.register_setting('layout', 'layout', layout_def)
 
     def _log_dict(self, obj, silent_error):
         # Creating a copy so changing the original object's keys doesn't 
