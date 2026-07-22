@@ -822,6 +822,9 @@ function stepForward(amount) {
 }
 
 function parseMaterialColor(color, material) {
+    // Local on purpose: an unmatched color spec must not silently reuse the
+    // previous call's value (this used to be an implicit global).
+    let colorValue;
     if (typeof color == 'string') {
         if (color.length == 6) {
             material.transparent = false;
@@ -838,6 +841,9 @@ function parseMaterialColor(color, material) {
         material.transparent = true;
         material.opacity = color[3] / 255;
         colorValue = colorArrayToNumber(color.slice(0, 3));
+    } else {
+        console.warn('parseMaterialColor: unsupported color spec', color);
+        colorValue = 0xdddddd;
     }
     material.color = new THREE.Color(colorValue);
 }
@@ -847,27 +853,36 @@ function addUpdateObject(data) {
         data.vertices = new Float32Array(data.vertices)
     }
 
-    if (!data.material) {
-        data.material = {};
-    }
+    // Parse into a copy: `data` is the registered payload kept in the
+    // session's static registry, and the scene is re-built from it on every
+    // session switch — writing the parsed THREE.Color back into it would make
+    // the color spec unparseable the second time around.
+    let material = {...(data.material || {})};
+    parseMaterialColor(material.color || 'dddddd', material)
+    scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, material, data.scale));
+}
 
-    parseMaterialColor(data.material.color || 'dddddd', data.material)
-    scene.addObject(new Mesh3D(data.name, data.vertices, data.indices, data.material, data.scale));
+// Build the scene object a registered static payload describes. Used both for
+// live registrations and to rebuild the scene from a session's static
+// registry when switching sessions.
+function buildSceneObjectFromStatic(payload) {
+    if (payload.type == '3dMesh') {
+        addUpdateObject(payload);
+    } else if (payload.type == 'pointcloud') {
+        // payload.name is already the '3d/<user-name>' key set by
+        // Scene.to_static_dict, so PointCloud3D registers under the
+        // same name Scene3D uses for pose updates.
+        const pc = new PointCloud3D(payload);
+        scene.addObject(pc);
+    }
 }
 
 function event3DCallback(type, evt, data) {
     switch(type) {
         case 'Traces::recordStaticData':
-            let payload = traces.staticData.get(data);
-            if (payload.type == '3dMesh') {
-                addUpdateObject(payload);
-            } else if (payload.type == 'pointcloud') {
-                // payload.name is already the '3d/<user-name>' key set by
-                // Scene.to_static_dict, so PointCloud3D registers under the
-                // same name Scene3D uses for pose updates.
-                const pc = new PointCloud3D(payload);
-                scene.addObject(pc);
-            }
+            // `evt` is the Traces instance that fired (the displayed
+            // session's), not necessarily the global re-pointed one.
+            buildSceneObjectFromStatic(evt.staticData.get(data));
         break;
     }
 }

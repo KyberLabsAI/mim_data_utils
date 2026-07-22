@@ -2,30 +2,44 @@ let plots = [];
 let layout = {
     zoomX: null
 };
-let hasData = false;
-let traces = new Traces(wsMaxData, eventCallback);
-traces.callbackFn.push(event3DCallback)
 
-let cameras = new Map(); // name -> CameraPlayback
+// --- Session bootstrap -------------------------------------------------------
+// All data lives in per-session stores (see sessions.js). The globals below
+// (`traces`, `cameras`, `marks`, `hasData`, ...) always point at the displayed
+// session's structures; switchSession() re-points them.
+migrateLegacySettings();
+currentSession = ensureSession(DEFAULT_SESSION_NAME);
+
+let hasData = false;
+let traces = currentSession.traces;
+
+let cameras = currentSession.cameras; // name -> CameraPlayback
 let camerasContainer = document.getElementById('camerasContainer');
 
-function getOrCreateCamera(name) {
-    if (cameras.has(name)) return cameras.get(name);
+function getOrCreateCamera(sd, name) {
+    if (sd.cameras.has(name)) return sd.cameras.get(name);
     let cam = new CameraPlayback(name, camerasContainer);
-    cameras.set(name, cam);
-    // A newly-appearing source honors any saved "disabled" selection; new
-    // sources default to shown.
-    applyImageVisibility();
+    sd.cameras.set(name, cam);
+    if (sd !== currentSession) {
+        // Background session: panel exists but stays hidden until the session
+        // is switched to.
+        cam.container.style.display = 'none';
+    } else {
+        // A newly-appearing source honors any saved "disabled" selection; new
+        // sources default to shown.
+        applyImageVisibility();
+    }
     return cam;
 }
 
 // --- Display filtering for image sources and 3D scene entries ---------------
-// Persisted as JSON arrays of DISABLED names, so a source not in the set
-// defaults to shown (new sources appear automatically). See openLayoutWindow().
-let disabledImageSources = new Set(JSON.parse(localStorage.getItem('disabledImageSources') || '[]'));
-let disabledPointClouds = new Set(JSON.parse(localStorage.getItem('disabledPointClouds') || '[]'));
+// Stored as arrays of DISABLED names in the session's settings, so a source
+// not in the set defaults to shown (new sources appear automatically). See
+// openLayoutWindow(). Re-pointed by switchSession().
+let disabledImageSources = new Set(currentSession.settings.disabledImageSources || []);
+let disabledPointClouds = new Set(currentSession.settings.disabledPointClouds || []);
 // All non-point-cloud 3D objects (meshes, plane, ...) collapse to one toggle.
-let sceneObjectsHidden = localStorage.getItem('sceneObjectsHidden') === 'true';
+let sceneObjectsHidden = !!currentSession.settings.sceneObjectsHidden;
 
 // A scene entry is a streamed point cloud iff it exposes addFrame() (PointCloud3D).
 function isPointCloudEntry(entry) {
@@ -52,16 +66,13 @@ function applySceneVisibility() {
 }
 
 function persistVisibility() {
-    localStorage.setItem('disabledImageSources', JSON.stringify([...disabledImageSources]));
-    localStorage.setItem('disabledPointClouds', JSON.stringify([...disabledPointClouds]));
-    localStorage.setItem('sceneObjectsHidden', sceneObjectsHidden ? 'true' : 'false');
+    currentSession.settings.disabledImageSources = [...disabledImageSources];
+    currentSession.settings.disabledPointClouds = [...disabledPointClouds];
+    currentSession.settings.sceneObjectsHidden = sceneObjectsHidden;
+    persistSessionSettings(currentSession);
 }
 
-function clearAllCameras() {
-    cameras.forEach(cam => cam.remove());
-    cameras.clear();
-}
-let marks = new Marks();
+let marks = currentSession.marks;
 let layoutDom = document.getElementById('layout');
 let domPlots = document.getElementById('plots');
 let panelRootDom = document.getElementById('panelRoot');
@@ -69,7 +80,7 @@ let addOptions = document.getElementById('addOptions');
 
 let forcePlotRefresh = true;
 
-layoutDom.value = localStorage.getItem('layout') || "trig[0],trig[1];trig[:2]";
+layoutDom.value = currentSession.settings.plotLayout;
 
 let scene = new Scene3D(document.getElementById('viewer'));
 let plane = new Plane3D('plane')
@@ -298,7 +309,8 @@ function applyPanelLayout(layoutText, persist = true) {
     panelLayoutValue = layoutAstToString(ast);
 
     if (persist) {
-        localStorage.setItem(PANEL_LAYOUT_STORAGE_KEY, panelLayoutValue);
+        currentSession.settings.panelLayout = panelLayoutValue;
+        persistSessionSettings(currentSession);
     }
 
     shouldResize = true;
@@ -340,6 +352,7 @@ function closeLayoutWindow() {
     holder.appendChild(addOptions);
     layoutPanelEl.remove();
     layoutPanelEl = null;
+    refreshSessionsUI = () => {};
     // Let the views row reclaim the panel's width and force an immediate rerender.
     document.body.classList.remove('layout-panel-open');
     applyResize();
@@ -375,6 +388,32 @@ function openLayoutWindow(focusTraces = false) {
     const dialog = document.createElement('div');
     dialog.className = 'custom-dialog layout-panel';
     layoutPanelEl = dialog;
+
+    // --- Sessions section: one row per known session, click to switch ---
+    const sessionsSection = makeLayoutSection('Sessions');
+    const sessionsList = document.createElement('div');
+    sessionsList.className = 'toggle-list';
+    sessionsSection.appendChild(sessionsList);
+    dialog.appendChild(sessionsSection);
+
+    function populateSessions() {
+        sessionsList.innerHTML = '';
+        const names = [...sessions.keys()].sort();
+        names.forEach(name => {
+            const sd = sessions.get(name);
+            const row = document.createElement('div');
+            row.className = 'session-row'
+                + (sd === currentSession ? ' active' : '')
+                + (sd.live ? '' : ' ended');
+            row.textContent = name + (!sd.live && sd.hasData ? ' (ended)' : '');
+            row.title = sd.live
+                ? 'Live session — click to view'
+                : 'Not live on the server; its data is kept until the page reloads';
+            row.addEventListener('click', () => switchSession(name));
+            sessionsList.appendChild(row);
+        });
+    }
+    populateSessions();
 
     // --- Layout section: input line first, legend below ---
     const layoutSection = makeLayoutSection('Layout');
@@ -502,6 +541,13 @@ function openLayoutWindow(focusTraces = false) {
     }
     populate();
 
+    // While the panel is open, session changes (new session, eviction, switch)
+    // re-render its lists live. Reset to a no-op on close.
+    refreshSessionsUI = () => {
+        populateSessions();
+        populate();
+    };
+
     // --- Footer: Close ---
     const buttons = document.createElement('div');
     buttons.className = 'buttons';
@@ -614,7 +660,8 @@ function transform_subs(value) {
 
 function updateLayout() {
     plotLayout = layoutDom.value;
-    localStorage.setItem('layout', plotLayout);
+    currentSession.settings.plotLayout = plotLayout;
+    persistSessionSettings(currentSession);
 
     // Handle definitions / substitutions like "x=12:3;sin[{x}]"
     plotLayoutPieces = transform_subs(plotLayout);
@@ -947,6 +994,7 @@ window.addEventListener('resize', (evt) => {
 
 function firstNewData() {
     hasData = true;
+    currentSession.hasData = true;
     updateSignals();
     updateLayout();
 }
@@ -985,12 +1033,20 @@ if (window.location.hash == '#example-data') {
 }
 
 try {
-    let savedPanelLayout = localStorage.getItem(PANEL_LAYOUT_STORAGE_KEY) || DEFAULT_PANEL_LAYOUT;
-    applyPanelLayout(savedPanelLayout, false);
+    applyPanelLayout(currentSession.settings.panelLayout || DEFAULT_PANEL_LAYOUT, false);
 } catch (err) {
     console.warn('Invalid saved panel layout, using default:', err);
     applyPanelLayout(DEFAULT_PANEL_LAYOUT, true);
 }
+
+// Keep the displayed session's settings (incl. the 3d camera poses, which are
+// only snapshotted on demand) persisted across page unloads.
+window.addEventListener('beforeunload', () => {
+    if (!currentSession) return;
+    currentSession.settings.cameras3d = snapshotSceneCameras();
+    currentSession.settings.plotLayout = layoutDom.value;
+    persistSessionSettings(currentSession);
+});
 
 // Apply any saved per-source display filters once the scene/cameras exist.
 applyImageVisibility();
@@ -1049,7 +1105,7 @@ function loadAllCameraSegments() {
         })
         .then(data => {
             (data.cameras || []).forEach(name => {
-                let cam = getOrCreateCamera(name);
+                let cam = getOrCreateCamera(currentSession, name);
                 cam.loadExistingSegments(`recordings/${name}/`);
             });
         })
@@ -1058,7 +1114,7 @@ function loadAllCameraSegments() {
             fetch('http://127.0.0.1:8000/recordings/timestamps.json')
                 .then(r => {
                     if (!r.ok) throw new Error('No timestamps.json');
-                    let cam = getOrCreateCamera('camera');
+                    let cam = getOrCreateCamera(currentSession, 'camera');
                     cam.loadExistingSegments('recordings/');
                 })
                 .catch(() => {});

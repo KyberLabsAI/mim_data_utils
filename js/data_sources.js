@@ -1,16 +1,18 @@
 let wsMaxData = 5 * 60 * 1000;
 //let wsMaxData = 1000 * 1000;
 
-function parseTimeSample(data) {
+function parseTimeSample(sd, data) {
     let t = parseFloat(data.time);
 
-    // Ignore new data in case the view is frozen and there is no space
-    // in the traces object left.
-    if (isFrozen && traces.willEvictFirstData(wsMaxData)) {
+    // Ignore new data in case the session is frozen and there is no space
+    // in the traces object left. (A background session stays frozen with the
+    // state it was left in.)
+    let frozen = sd === currentSession ? isFrozen : sd.frozen;
+    if (frozen && sd.traces.willEvictFirstData(wsMaxData)) {
         return false;
     }
 
-    traces.beginTimestep(t, wsMaxData);
+    sd.traces.beginTimestep(t, wsMaxData);
 
     for (let [key, value] of Object.entries(data.payload)) {
         if (key === 'time') {
@@ -33,29 +35,59 @@ function parseTimeSample(data) {
             }
         }
 
-        traces.record(key, value)
+        sd.traces.record(key, value)
     }
 
-    traces.endTimestep();
+    sd.traces.endTimestep();
     return false;
 }
 
 // A setting is a viewer configuration the producer registered for the session.
 // It arrives both live and as part of the setup replay a reconnecting viewer
-// gets, so applying one must be idempotent.
-function applySetting(name, payload) {
-    switch (name) {
-        case '3dCamera':
-            scene.addViewer();
-            return false;
+// gets, so applying one must be idempotent. Producer settings also update the
+// session's persisted settings, so they become the "last used" configuration
+// the session comes back with.
+function applySetting(sd, name, payload) {
+    const active = sd === currentSession;
 
-        case '3dCameraLocation':
-            scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
+    switch (name) {
+        case '3dCamera': {
+            if (active) {
+                scene.addViewer();
+                sd.settings.cameras3d = snapshotSceneCameras();
+            } else if (!sd.settings.cameras3d) {
+                // Background session with no stored camera state: record that
+                // it wants the default viewer plus one more. If camera state
+                // is already stored, that wins (it is the last-used config).
+                sd.settings.cameras3d = [
+                    {position: [1.5, 1.5, 1.5], lookAt: [0, 0, 0]},
+                    {position: [1.5, 1.5, 1.5], lookAt: [0, 0, 0]},
+                ];
+            }
+            persistSessionSettings(sd);
             return false;
+        }
+
+        case '3dCameraLocation': {
+            if (active) {
+                scene.updateCamera(payload.cameraIndex, payload.position, payload.lookAt);
+            }
+            const cams = sd.settings.cameras3d = sd.settings.cameras3d || [];
+            while (cams.length <= payload.cameraIndex) {
+                cams.push({position: [1.5, 1.5, 1.5], lookAt: [0, 0, 0]});
+            }
+            cams[payload.cameraIndex] = {position: payload.position, lookAt: payload.lookAt};
+            persistSessionSettings(sd);
+            return false;
+        }
 
         case 'layout':
-            layoutDom.value = payload;
-            updateLayout();
+            sd.settings.plotLayout = payload;
+            persistSessionSettings(sd);
+            if (active) {
+                layoutDom.value = payload;
+                updateLayout();
+            }
             return false;
     }
 
@@ -66,23 +98,38 @@ function applySetting(name, payload) {
 // Registered setups: the 3d scene objects and viewer settings the server keeps
 // per session and replays whenever a viewer connects, so a page reload does not
 // lose the meshes and point clouds that were registered before it opened.
-function parseSetup(data) {
-    if (data.op === 'set') {
+function parseSetup(sd, data) {
+    const active = sd === currentSession;
+
+    if (data.op === 'launch') {
+        // A producer (re)started this session: it begins fresh (settings are
+        // kept — "same name, same configuration"), and the view follows it.
+        sd.clearData();
+        sd.live = true;
+        if (!active) {
+            switchSession(sd.name);
+        }
+        return true;
+    } else if (data.op === 'set') {
         if (data.kind === 'scene') {
             // Goes through traces so the existing Traces::recordStaticData
-            // handler in scene3d.js builds the Mesh3D / PointCloud3D.
-            traces.recordStaticData(data.key, data.payload);
+            // handler in scene3d.js builds the Mesh3D / PointCloud3D (only
+            // when this session is the displayed one; see SessionData).
+            sd.traces.recordStaticData(data.key, data.payload);
             return true;
         } else if (data.kind === 'setting') {
-            return applySetting(data.name, data.payload);
+            return applySetting(sd, data.name, data.payload);
         }
     } else if (data.op === 'remove') {
-        traces.staticData.delete(data.key);
-        scene.removeObject(data.key);
+        sd.traces.staticData.delete(data.key);
+        if (active) scene.removeObject(data.key);
         return true;
     } else if (data.op === 'clear') {
-        traces.staticData.clear();
-        scene.clear();
+        sd.traces.staticData.clear();
+        if (active) {
+            scene.clear();
+            scene.addObject(new Plane3D('plane'));
+        }
         return true;
     }
 
@@ -90,8 +137,15 @@ function parseSetup(data) {
 }
 
 function parsewebSocketData(data) {
+    // Viewer control messages from the server (not tied to one session).
+    if (data.type == 'sessions') {
+        handleSessionsMessage(data.sessions);
+        return;
+    }
+
+    const sd = ensureSession(data.session || DEFAULT_SESSION_NAME);
+    const active = sd === currentSession;
     let relayout = false;
-    let type = data.type;
 
     if (data.type == 'sample') {
         if (data.time == 'static') {
@@ -99,11 +153,18 @@ function parsewebSocketData(data) {
                 if (key === 'time') {
                     continue;
                 }
-                traces.recordStaticData(key, value);
+                sd.traces.recordStaticData(key, value);
             }
             relayout = true;
         } else {
-            relayout = parseTimeSample(data)
+            relayout = parseTimeSample(sd, data)
+        }
+
+        if (!sd.hasData) {
+            sd.hasData = true;
+            if (active) {
+                firstNewData();
+            }
         }
     } else if (data.type == 'image') {
         let imgTime = parseFloat(data.time);
@@ -113,58 +174,63 @@ function parsewebSocketData(data) {
         _imgDebug.totalLag += lag;
         _imgDebug.maxLag = Math.max(_imgDebug.maxLag, lag);
         _imgDebug.lastImgTime = imgTime;
-        let cam = getOrCreateCamera(data.name || 'default');
-        if (isFrozen && cam.imageStore.times.length >= cam.imageStore.maxFrames) {
+        let cam = getOrCreateCamera(sd, data.name || 'default');
+        let frozen = active ? isFrozen : sd.frozen;
+        if (frozen && cam.imageStore.times.length >= cam.imageStore.maxFrames) {
             // Don't evict frozen images — drop the incoming frame instead
         } else {
             cam.addImage(imgTime, data.payload);
         }
     } else if (data.type == 'video_segment') {
-        let cam = getOrCreateCamera(data.name || 'default');
+        let cam = getOrCreateCamera(sd, data.name || 'default');
         cam.addVideoSegment(data);
     } else if (data.type == 'depth') {
-        const key = '3d/' + (data.name || 'default');
-        const pc = scene.objects.get(key);
-        if (pc && pc.addFrame) {
-            const t = parseFloat(data.time);
-            pc.addFrame(t, data.depth, data.rgb, data.depth_scale, data.intrinsics);
+        // Point-cloud frames feed the PointCloud3D object living in the 3d
+        // scene, which only hosts the displayed session's objects — frames of
+        // background sessions are dropped (their streaming resumes when they
+        // are switched to).
+        if (active) {
+            const key = '3d/' + (data.name || 'default');
+            const pc = scene.objects.get(key);
+            if (pc && pc.addFrame) {
+                const t = parseFloat(data.time);
+                pc.addFrame(t, data.depth, data.rgb, data.depth_scale, data.intrinsics);
+            }
         }
         // If no PointCloud has been registered yet for this name, drop the
         // frame. The static registration is normally sent once before any
-        // depth frame via logger.log_static(scene).
+        // depth frame via the registered-setup replay.
     } else if (data.type == 'setup') {
-        relayout = parseSetup(data);
+        relayout = parseSetup(sd, data);
     } else if (data.type == 'marker') {
         let markerTime = parseFloat(data.time);
         let showSummary = data.show_summary === true;
-        marks.addMarkWithLabel(data.label, markerTime, showSummary);
+        sd.marks.addMarkWithLabel(data.label, markerTime, showSummary);
     } else if (data.type == 'command') {
         let payload = data.payload;
         switch (data.name) {
             case 'clear':
                 wsMaxData = payload.maxData;
-                scene.clear();
-                traces.clear(wsMaxData);
-                clearAllCameras();
-                marks.clearMarks();
-                updateLayout(); // Redo layout as data was cleared.
-                freeZoom();
-                relayout = true;
+                sd.clearData();     // handles scene/layout when sd is displayed
+                if (active) {
+                    freeZoom();
+                }
+                relayout = active;
                 break;
 
             case 'zoomReset':
-                freeZoom();
+                if (active) freeZoom();
                 break;
 
             default:
                 // Settings used to be sent as one-off commands; recorded files
                 // and older producers still do.
-                relayout = applySetting(data.name, payload) || relayout;
+                relayout = applySetting(sd, data.name, payload) || relayout;
                 break;
         }
     }
 
-    if (relayout) {
+    if (relayout && sd === currentSession) {
         updateLayout();
     }
 }
@@ -214,33 +280,20 @@ function connectViaWebSocket() {
     ws = new WebSocket("ws://127.0.0.1:5678/");
     ws.binaryType = "arraybuffer";
 
-    let firstData = true;
     ws.onmessage = function (event) {
         domMessage.textContent = '';
-
-        if (firstData) {
-            freeze(false);
-            traces.clear();
-            dataRecord = []
-        }
 
         let _t0 = performance.now();
         let data = MessagePack.decode(new Uint8Array(event.data));
         _imgDebug.decodeTotalMs += (performance.now() - _t0);
 
-        // if (dataRecord.length < 100) {
-        //     dataRecord.push(event.data);
-        //     localStorage.setItem('lastData', JSON.stringify(dataRecord));
-        // }
-
+        // Session data lives in the browser: no wholesale clear on
+        // (re)connect. A session launch clears just that session, and the
+        // server's 'sessions' message (first thing it sends) refreshes the
+        // liveness of the session list.
         data.forEach(parsewebSocketData);
         packets += 1;
         datas += data.length;
-
-        if (firstData) {
-            firstData = false;
-            firstNewData();
-        }
     };
 
     ws.onerror = function (event) {

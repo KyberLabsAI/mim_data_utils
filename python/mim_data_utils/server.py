@@ -7,11 +7,61 @@ import ormsgpack
 from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
 from kyber_utils.zeromq import (
     ZmqBroker,
-    ZmqPublisher,
     ZmqSubscriber,
     ZmqRemoteKeyValueServer,
-    ZmqRemoteValue,
 )
+
+class SessionTracker:
+    """Live-session bookkeeping: which sessions exist and when each last saw data.
+
+    At most `MAX_SESSIONS` sessions are alive at a time. Registering one more
+    evicts the session whose *data* is stalest (oldest last-received sample),
+    not the one registered longest ago. Any message on a session's topic
+    (re-)registers it, so a session only stays evicted if its producer went
+    quiet.
+    """
+
+    MAX_SESSIONS = 4
+
+    def __init__(self):
+        self.sessions = {}  # name -> wall time of last received data
+        self._lock = threading.Lock()
+        # Called with (evicted_names) after membership changed; set by run().
+        # Invoked outside the lock.
+        self.on_change = None
+
+    def touch(self, name):
+        """Mark data received for `name`, registering it if unknown.
+
+        Returns the list of evicted session names (empty if none).
+        """
+        added = False
+        evicted = []
+        with self._lock:
+            if name in self.sessions:
+                self.sessions[name] = time.time()
+            else:
+                while len(self.sessions) >= self.MAX_SESSIONS:
+                    oldest = min(self.sessions, key=lambda n: self.sessions[n])
+                    del self.sessions[oldest]
+                    evicted.append(oldest)
+                self.sessions[name] = time.time()
+                added = True
+
+        if (added or evicted) and self.on_change:
+            self.on_change(evicted)
+
+        return evicted
+
+    def is_live(self, name):
+        with self._lock:
+            return name in self.sessions
+
+    def snapshot(self):
+        """{name: last_data_time} of all live sessions."""
+        with self._lock:
+            return dict(self.sessions)
+
 
 class SetupRegistry:
     """Per-session store of the setups a viewer needs to render the stream.
@@ -74,19 +124,27 @@ class SetupRegistry:
             print(f"[setup] ignoring unknown op: {op}")
             return []
 
+    def clear_session(self, session):
+        """Drop all cached setups of `session` (launch restart / eviction)."""
+        with self._lock:
+            self.sessions.pop(session, None)
+
     def snapshot(self, session):
         """All setups of `session`, packed and ready to send to a new viewer."""
-        with self._lock:
-            kinds = self.sessions.get(session)
-            if not kinds:
-                return None
-
-            items = list(kinds['setting'].values()) + list(kinds['scene'].values())
-
+        items = self.snapshot_items(session)
         if not items:
             return None
 
         return ormsgpack.packb(items)
+
+    def snapshot_items(self, session):
+        """All setups of `session` as a plain item list (may be empty)."""
+        with self._lock:
+            kinds = self.sessions.get(session)
+            if not kinds:
+                return []
+
+            return list(kinds['setting'].values()) + list(kinds['scene'].values())
 
 
 class WebsocketHandler(WebSocket):
@@ -115,7 +173,7 @@ class WebsocketHandler(WebSocket):
 class BinaryWebSocketServer(threading.Thread):
     def __init__(self, handler_cls, host='0.0.0.0', port=9001,
                  pointcloud_backlog=10, video_backlog=30, ts_backlog=400,
-                 setup_registry=None, active_session_fn=None):
+                 setup_registry=None, session_tracker=None):
         super().__init__(daemon=True)  # run as daemon thread
         self.host = host
         self.port = port
@@ -123,10 +181,10 @@ class BinaryWebSocketServer(threading.Thread):
         self._server = None
         self.handler_cls = handler_cls
         handler_cls.ws_server = self
-        # Registered setups replayed to every client on connect, and the way to
-        # find out which session's setups that is.
+        # Registered setups replayed to every client on connect, for every
+        # session the tracker reports live.
         self.setup_registry = setup_registry
-        self.active_session_fn = active_session_fn
+        self.session_tracker = session_tracker
         # Prioritized backpressure. A viewer that can't keep up otherwise grows an
         # unbounded SimpleWebSocketServer sendq, so it keeps receiving old data and
         # its lag grows without bound. We cap each client's queue depth, but at
@@ -162,18 +220,37 @@ class BinaryWebSocketServer(threading.Thread):
         print(f"Websocket server running on ws://{self.host}:{self.port}")
         self._server.serveforever()
 
-    def send_setups(self, client):
-        """Send the active session's registered setups to a just-connected client."""
-        if self.setup_registry is None or self.active_session_fn is None:
-            return
+    def sessions_message(self):
+        """The live-session list as a packed viewer control message."""
+        sessions = self.session_tracker.snapshot() if self.session_tracker else {}
+        return ormsgpack.packb([{
+            'type': 'sessions',
+            'sessions': [
+                {'name': name, 'last_data': last_data}
+                for name, last_data in sorted(sessions.items())
+            ],
+        }])
 
+    def broadcast_sessions(self):
+        """Push the current live-session list to all connected viewers."""
+        self.broadcast(self.sessions_message(), priority='timeseries')
+
+    def send_setups(self, client):
+        """Send the session list and every live session's setups to a
+        just-connected client."""
         try:
-            snapshot = self.setup_registry.snapshot(self.active_session_fn())
-            if snapshot is None:
+            client.sendMessage(self.sessions_message())
+
+            if self.setup_registry is None or self.session_tracker is None:
                 return
 
-            client.sendMessage(snapshot)
-            print(f"[setup] replayed setups to {getattr(client, 'address', client)}")
+            for name in self.session_tracker.snapshot():
+                snapshot = self.setup_registry.snapshot(name)
+                if snapshot is None:
+                    continue
+                client.sendMessage(snapshot)
+                print(f"[setup] replayed '{name}' setups to "
+                      f"{getattr(client, 'address', client)}")
         except Exception:
             traceback.print_exc()
 
@@ -245,27 +322,31 @@ def run():
     while not broker.is_running:
         time.sleep(0.01)
 
-    def on_value_update(key, value):
-        if key == 'active_session':
-            print(f"Active session set to: {value}")
-
     value_server = ZmqRemoteKeyValueServer({
         'websocket_num_clients': 0,
-        # Sessions are disabled for now (see logger._generate_session_name):
-        # all loggers use the fixed 'FooBarSession', so default the filter to
-        # it — timeseries flow even if no producer ever activates a session.
-        'active_session': 'FooBarSession'
-    }, on_update=on_value_update)
+    })
 
     # Shared Zmq value to keep track of connected websockets.
     WebsocketHandlerPubSub.value_server = value_server
 
     setup_registry = SetupRegistry()
+    session_tracker = SessionTracker()
 
     websocket = BinaryWebSocketServer(
         WebsocketHandlerPubSub, host='127.0.0.1', port=5678,
         setup_registry=setup_registry,
-        active_session_fn=lambda: value_server.get('active_session'))
+        session_tracker=session_tracker)
+
+    def on_sessions_change(evicted):
+        # An evicted session's cached setups go with it; its data already in
+        # the viewers stays (the viewer greys the session out).
+        for name in evicted:
+            setup_registry.clear_session(name)
+            print(f"[session] evicted: {name}")
+        websocket.broadcast_sessions()
+
+    session_tracker.on_change = on_sessions_change
+
     websocket.start()
     time.sleep(0.1)  # Give the thread time to print
 
@@ -274,11 +355,21 @@ def run():
     static_server = StaticFileServer(directory=_pkg_root, port=8000)
     static_server.start()
 
+    def topic_session(topic):
+        """'/camera/<session>' (bytes) -> '<session>'; None if malformed."""
+        parts = topic.decode('utf-8', 'replace').split('/', 2)
+        return parts[2] if len(parts) == 3 and parts[2] else None
+
     _camera_debug_count = [0]
     _camera_debug_frame_count = [0]
     _camera_debug_last_print = [time.time()]
 
     def on_camera(topic, data):
+        session = topic_session(topic)
+        if session is None:
+            return
+        session_tracker.touch(session)
+
         now = time.time()
         _camera_debug_count[0] += 1
         # Count individual image items inside the batch
@@ -302,6 +393,11 @@ def run():
         websocket.broadcast(data, priority='camera')
 
     def on_pointcloud(topic, data):
+        session = topic_session(topic)
+        if session is None:
+            return
+        session_tracker.touch(session)
+
         # Point clouds are the heaviest payload; broadcast at the lowest
         # priority so a slow viewer sheds them before camera video.
         websocket.broadcast(data, priority='pointcloud')
@@ -315,7 +411,20 @@ def run():
             traceback.print_exc()
             return
 
-        changed = [out for item in items for out in setup_registry.apply(item)]
+        changed = []
+        for item in items:
+            if item.get('op') == 'launch':
+                # A producer (re)starting this session: register it (evicting
+                # the stalest live session if we're at capacity), drop its
+                # cached setups, and forward the launch so viewers clear the
+                # session's data and switch to it.
+                name = item.get('session') or 'Default'
+                setup_registry.clear_session(name)
+                session_tracker.touch(name)
+                print(f"[session] launched: {name}")
+                changed.append(item)
+            else:
+                changed.extend(setup_registry.apply(item))
 
         # Forward what actually changed, so viewers that are already open pick
         # up new registrations live.
@@ -323,9 +432,11 @@ def run():
             websocket.broadcast(ormsgpack.packb(changed), priority='timeseries')
 
     def on_timeseries(topic, data):
-        active_session = value_server.get('active_session')
-        if active_session and topic == f'/timeseries/{active_session}'.encode():
-            websocket.broadcast(data, priority='timeseries')
+        session = topic_session(topic)
+        if session is None:
+            return
+        session_tracker.touch(session)
+        websocket.broadcast(data, priority='timeseries')
 
     sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
     sub_pointcloud = ZmqSubscriber('/pointcloud/', callback=on_pointcloud)

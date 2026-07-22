@@ -1,6 +1,5 @@
 import os
 import time
-import random
 import uuid
 from pathlib import Path
 import numpy as np
@@ -30,23 +29,8 @@ _POINTCLOUD_TYPES = ('depth',)
 # stays an opaque blob on the relay hot path.
 _SETUP_TYPES = ('setup',)
 
-_SESSION_WORDS = [
-    'red', 'blue', 'green', 'gold', 'silver', 'amber', 'coral', 'jade',
-    'ruby', 'pearl', 'ivory', 'crimson', 'azure', 'violet', 'indigo',
-    'oak', 'pine', 'elm', 'maple', 'birch', 'cedar', 'willow', 'fern',
-    'moss', 'river', 'lake', 'stone', 'cliff', 'ridge', 'vale', 'brook',
-    'storm', 'frost', 'dawn', 'dusk', 'mist', 'rain', 'snow', 'wind',
-    'wolf', 'bear', 'hawk', 'deer', 'fox', 'owl', 'lynx', 'crane',
-    'robin', 'finch', 'swift', 'raven', 'eagle', 'otter', 'heron',
-    'bold', 'calm', 'keen', 'warm', 'cool', 'quick', 'brave', 'bright',
-    'north', 'south', 'east', 'west', 'iron', 'flint', 'spark', 'ember',
-]
-
-def _generate_session_name():
-    # Multi-session support is disabled for now: every logger shares one fixed
-    # session name so a restarting producer can't steal or orphan the viewer's
-    # active session. Random names: '-'.join(random.sample(_SESSION_WORDS, 3))
-    return 'FooBarSession'
+# Session name used when the producer does not specify one.
+DEFAULT_SESSION = 'Default'
 
 
 class FileLoggerWriter:
@@ -65,11 +49,6 @@ class FileLoggerWriter:
         # plain file writer (headless logging).
         if self.child:
             self.child.set_session(name)
-
-    def session_action(self, data):
-        # Sessions only exist for the websocket viewer; nothing to do for a file.
-        if self.child:
-            self.child.session_action(data)
 
     def init(self):
         self.is_full = False
@@ -227,9 +206,11 @@ class WebsocketWriter:
         with self._lock:
             assert(self.session_name is not None)
 
+            # All data topics are session-scoped so the server can track
+            # session liveness and route without unpacking payloads.
             self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
-            self.camera_publisher = ZmqPublisher('/camera/', sndhwm=2)
-            self.pointcloud_publisher = ZmqPublisher('/pointcloud/', sndhwm=2)
+            self.camera_publisher = ZmqPublisher(f'/camera/{self.session_name}', sndhwm=2)
+            self.pointcloud_publisher = ZmqPublisher(f'/pointcloud/{self.session_name}', sndhwm=2)
             self.setup_publisher = ZmqPublisher('/setup/')
             self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
@@ -326,14 +307,6 @@ class WebsocketWriter:
                 self.pointcloud_publisher.send(pointcloud_bytes)
             if other_bytes is not None:
                 self.publisher.send(other_bytes)
-
-    def session_action(self, data):
-        with self._lock:
-            if self.publisher is None:
-                self.init()
-
-        active_session = ZmqRemoteValue('active_session')
-        active_session.set(data['name'])
 
     def close(self):
         with self._lock:
@@ -443,11 +416,12 @@ class Logger(threading.Thread):
     def to_subprocess():
         return SubprocessWriter()
 
-    def __init__(self, server, layout_def=None, start=True, make_session_active=True):
+    def __init__(self, server, layout_def=None, start=True, make_session_active=True,
+                 session=None):
         super().__init__()
 
         self.server = server
-        self.session_name = _generate_session_name()
+        self.session_name = session or DEFAULT_SESSION
 
         # Only identifies who registered a setup, for debugging. Registered
         # setups outlive the producer: like the timeseries and images already
@@ -456,14 +430,19 @@ class Logger(threading.Thread):
 
         server.set_session(self.session_name)
 
-        # When just publishing image / video, no need to make session active.
+        self.log_queue = queue.Queue()
+        self.loggable_value_classes = [RawMesh, Scene, PointCloud]
+
+        # Launching a session announces it to the server (registering it in
+        # the live-session list, evicting the stalest one if there are more
+        # than 4) and starts it fresh: the viewer clears any previous data of
+        # this session name and switches to it. Passive loggers
+        # (make_session_active=False, e.g. camera-only publishers) join the
+        # session without clearing it.
         if make_session_active:
             self.activate_session()
 
         print(f"Session: {self.session_name}")
-
-        self.log_queue = queue.Queue()
-        self.loggable_value_classes = [RawMesh, Scene, PointCloud]
 
         if layout_def is not None:
             self.layout(layout_def)
@@ -505,10 +484,21 @@ class Logger(threading.Thread):
             self._send_data(item_to_log)
 
     def _append_log(self, data):
+        # Every item carries its session so the viewer can file it into the
+        # right per-session store.
+        data.setdefault('session', self.session_name)
         self.log_queue.put(data)
 
     def activate_session(self):
-        self.server.session_action({'type': 'activate', 'name': self.session_name})
+        # Goes through the '/setup/' channel: the server unpacks setup items,
+        # so it sees the launch, (re)registers the session, clears the
+        # session's cached setups and tells the viewers to start it fresh.
+        self._append_log({
+            'type': 'setup',
+            'op': 'launch',
+            'session': self.session_name,
+            'producer': self.producer_id,
+        })
 
     def clear(self, max_data=(5 * 60 * 1000)):
         self.clear_setups()

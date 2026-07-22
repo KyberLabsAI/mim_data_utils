@@ -154,6 +154,28 @@ const _dialogCSS = `
     color: #888;
     font-style: italic;
 }
+.custom-dialog .session-row {
+    font-size: 13px;
+    padding: 4px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.custom-dialog .session-row:hover {
+    background: #eee;
+}
+.custom-dialog .session-row.active {
+    background: #2678b2;
+    color: #fff;
+    font-weight: bold;
+}
+.custom-dialog .session-row.ended {
+    color: #999;
+    font-style: italic;
+}
+.custom-dialog .session-row.active.ended {
+    background: #7a97ab;
+    color: #eee;
+}
 `;
 
 // Inject CSS once
