@@ -11,6 +11,12 @@ from kyber_utils.zeromq import (
     ZmqRemoteKeyValueServer,
 )
 
+try:
+    from mim_data_utils.logger import resolve_shm_items
+except ImportError:
+    # server.py can be run as a plain script from the package directory.
+    from logger import resolve_shm_items
+
 class SessionTracker:
     """Live-session bookkeeping: which sessions exist and when each last saw data.
 
@@ -264,19 +270,38 @@ class BinaryWebSocketServer(threading.Thread):
         priority='timeseries' -> high: dropped only past ts_backlog (protected;
                                  thins out only when dropping the rest isn't enough).
         """
+        self.broadcast_lazy(lambda: data, priority)
+
+    def broadcast_lazy(self, build_fn, priority='timeseries'):
+        """Like broadcast(), but materializes the payload lazily.
+
+        `build_fn()` is called only when at least one client is under the
+        priority's backlog cap; under full backpressure (or with no client
+        connected) the payload is never built. This is what keeps
+        shared-memory image references from being read when the frame would
+        be dropped anyway. `build_fn` may return None to skip sending (e.g.
+        every referenced payload was already overwritten).
+        """
         cap = self._caps.get(priority, self.ts_backlog)
+        eligible = []
         for client in list(self.clients):  # list() to avoid set change during iteration
-            try:
-                if len(client.sendq) >= cap:
-                    # Client is behind at this priority level; drop to let it catch up.
-                    counts = self._dropped.setdefault(client, {})
-                    counts[priority] = counts.get(priority, 0) + 1
-                    continue
-                client.sendMessage(data)
-            except Exception as e:
-                print("Failed to send to client:", e)
-                self.clients.discard(client)  # remove dead client
-                self._dropped.pop(client, None)
+            if len(client.sendq) >= cap:
+                # Client is behind at this priority level; drop to let it catch up.
+                counts = self._dropped.setdefault(client, {})
+                counts[priority] = counts.get(priority, 0) + 1
+            else:
+                eligible.append(client)
+
+        if eligible:
+            data = build_fn()
+            if data is not None:
+                for client in eligible:
+                    try:
+                        client.sendMessage(data)
+                    except Exception as e:
+                        print("Failed to send to client:", e)
+                        self.clients.discard(client)  # remove dead client
+                        self._dropped.pop(client, None)
         self._log_drops()
 
     def _log_drops(self):
@@ -373,6 +398,7 @@ def run():
         now = time.time()
         _camera_debug_count[0] += 1
         # Count individual image items inside the batch
+        items = None
         try:
             items = ormsgpack.unpackb(data)
             n_imgs = sum(1 for item in items if item.get(b'type') == b'image' or item.get('type') == 'image')
@@ -390,7 +416,32 @@ def run():
             _camera_debug_count[0] = 0
             _camera_debug_frame_count[0] = 0
             _camera_debug_last_print[0] = now
-        websocket.broadcast(data, priority='camera')
+
+        _relay_with_refs(data, items, 'camera')
+
+    def _relay_with_refs(data, items, priority):
+        """Broadcast a camera/pointcloud batch, resolving shm references lazily.
+
+        Payloads may live in a shared-memory ring, with the message only
+        carrying references (Logger image_shm). broadcast_lazy resolves them
+        only when at least one viewer will actually receive the frame: under
+        backpressure nothing is read from shared memory and the frame is
+        simply dropped.
+        """
+        has_refs = isinstance(items, list) and any(
+            isinstance(it, dict) and 'shm' in it for it in items)
+        if not has_refs:
+            websocket.broadcast(data, priority=priority)
+            return
+
+        def build():
+            resolved = resolve_shm_items(items)
+            if not resolved:
+                return None
+            return ormsgpack.packb(
+                resolved, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+
+        websocket.broadcast_lazy(build, priority=priority)
 
     def on_pointcloud(topic, data):
         session = topic_session(topic)
@@ -400,7 +451,11 @@ def run():
 
         # Point clouds are the heaviest payload; broadcast at the lowest
         # priority so a slow viewer sheds them before camera video.
-        websocket.broadcast(data, priority='pointcloud')
+        try:
+            items = ormsgpack.unpackb(data)
+        except Exception:
+            items = None
+        _relay_with_refs(data, items, 'pointcloud')
 
     def on_setup(topic, data):
         # Setup items are rare and small enough to unpack here: the registry

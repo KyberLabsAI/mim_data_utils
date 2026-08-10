@@ -26,6 +26,19 @@ _FPS_ESTIMATE_FRAMES = 15
 # Force a keyframe every this many seconds of video.
 _KEYFRAME_INTERVAL_S = 2
 
+# Named heights (16:9) for --with-encode-video SIZE args like 720p.
+_P_SIZES = {
+    144: (256, 144),
+    240: (426, 240),
+    320: (568, 320),
+    360: (640, 360),
+    480: (854, 480),
+    720: (1280, 720),
+    1080: (1920, 1080),
+    1440: (2560, 1440),
+    2160: (3840, 2160),
+}
+
 
 def _item_field(d, key):
     """Fetch a field from a msgpack-decoded dict, tolerating bytes-or-str keys."""
@@ -33,6 +46,76 @@ def _item_field(d, key):
         return d[key]
     bkey = key.encode() if isinstance(key, str) else key
     return d.get(bkey)
+
+
+def _even(n):
+    """Round down to an even integer (yuv420p / nvenc requirement)."""
+    n = int(n)
+    return n - (n % 2)
+
+
+def parse_encode_size(token):
+    """Parse a size token: ``640x360``, ``640×360``, or ``720p`` / ``320p``.
+
+    Returns ``(width, height)`` with even dimensions.
+    """
+    t = token.strip().lower().replace('×', 'x')
+    if t.endswith('p') and t[:-1].isdigit():
+        h = int(t[:-1])
+        if h in _P_SIZES:
+            return _P_SIZES[h]
+        w = _even(round(h * 16 / 9))
+        return (w, _even(h))
+    if 'x' in t:
+        w_s, h_s = t.split('x', 1)
+        if w_s.isdigit() and h_s.isdigit():
+            w, h = _even(w_s), _even(h_s)
+            if w > 0 and h > 0:
+                return (w, h)
+    raise ValueError(
+        f'invalid encode size {token!r} (expected e.g. 640x360, 640×360, 720p)')
+
+
+def parse_encode_fps(token):
+    """Parse an fps token: ``24fps`` or ``24``."""
+    t = token.strip().lower()
+    if t.endswith('fps'):
+        t = t[:-3]
+    try:
+        fps = float(t)
+    except ValueError as e:
+        raise ValueError(
+            f'invalid encode fps {token!r} (expected e.g. 24fps or 24)') from e
+    if not (fps == fps) or fps <= 0:  # NaN or non-positive
+        raise ValueError(f'encode fps must be positive, got {token!r}')
+    return fps
+
+
+def parse_encode_video_args(tokens):
+    """Parse optional ``--with-encode-video`` tokens into ``(size, fps_limit)``.
+
+    Tokens may be SIZE (``640x360`` / ``720p``) and/or FPS (``24fps`` / ``24``),
+    in either order. Missing values are ``None`` (native size / estimated fps).
+    """
+    size, fps = None, None
+    for tok in tokens:
+        t = tok.strip().lower().replace('×', 'x')
+        is_size = ('x' in t) or (t.endswith('p') and t[:-1].isdigit())
+        is_fps = t.endswith('fps') or (
+            not is_size and t.replace('.', '', 1).isdigit())
+        if is_size:
+            if size is not None:
+                raise ValueError(f'duplicate encode size: {tok!r}')
+            size = parse_encode_size(tok)
+        elif is_fps:
+            if fps is not None:
+                raise ValueError(f'duplicate encode fps: {tok!r}')
+            fps = parse_encode_fps(tok)
+        else:
+            raise ValueError(
+                f'unrecognized --with-encode-video argument: {tok!r} '
+                f'(expected SIZE like 640x360/720p and/or FPS like 24fps)')
+    return size, fps
 
 
 def _safe_name(name):
@@ -72,27 +155,59 @@ class _CameraEncoder:
     timestamps; ffmpeg is then launched and the buffer flushed.  JPEG bytes are
     piped straight in (decoded on CPU by ffmpeg, encoded on the GPU via
     ``hevc_nvenc``), so no decode is needed on our side.
+
+    Optional ``size=(w, h)`` rescales via ffmpeg before encode. Optional
+    ``fps_limit`` drops excess frames (phase-locked schedule) and caps the
+    written stream rate; the fps estimate is always taken from the raw stream
+    so a limit never poisons the measurement.
     """
 
-    def __init__(self, name, out_path):
+    def __init__(self, name, out_path, size=None, fps_limit=None):
         self.name = name
         self.out_path = out_path
+        self.size = size  # (w, h) or None
+        self.fps_limit = fps_limit  # float or None
         self.proc = None
         self.started = False
         self.failed = False
         self.buffer = []  # list of (jpeg_bytes, t) until fps is known
         self.fps = None
         self.frame_count = 0
+        self._next_keep_t = None  # phase-locked drop schedule
 
     def feed(self, jpeg, t):
         if self.failed or jpeg is None:
             return
         if not self.started:
+            # Buffer raw frames (no dropping) so the fps estimate reflects the
+            # true arrival rate, not an undershot cap.
             self.buffer.append((jpeg, t))
             if len(self.buffer) >= _FPS_ESTIMATE_FRAMES:
                 self._start()
             return
-        self._write(jpeg)
+        if self._should_keep(t):
+            self._write(jpeg)
+
+    def _should_keep(self, t):
+        """Keep this frame under ``fps_limit``, using a phase-locked timeline.
+
+        A greedy ``t - last_kept >= 1/limit`` check undershoots badly when
+        source timestamps sit on a coarser grid (e.g. 33.3 ms / 30 fps) than
+        ``1/limit`` (e.g. 41.7 ms / 24 fps): every other frame fails the gap
+        test and the measured rate collapses to ~half. Advancing a regular
+        schedule instead keeps up to ``fps_limit`` without that bias.
+        """
+        if self.fps_limit is None or not isinstance(t, (int, float)):
+            return True
+        dt = 1.0 / self.fps_limit
+        if self._next_keep_t is None:
+            self._next_keep_t = t + dt
+            return True
+        if t + 1e-9 < self._next_keep_t:
+            return False
+        while self._next_keep_t <= t + 1e-9:
+            self._next_keep_t += dt
+        return True
 
     def _estimate_fps(self):
         ts = [t for _, t in self.buffer
@@ -104,7 +219,12 @@ class _CameraEncoder:
         return 30.0
 
     def _start(self):
-        self.fps = self._estimate_fps()
+        est = self._estimate_fps()
+        if self.fps_limit is not None:
+            # Cap only: never invent frames if the source is slower than the limit.
+            self.fps = min(est, self.fps_limit)
+        else:
+            self.fps = est
         fps = self.fps
         cmd = [
             'ffmpeg', '-y',
@@ -112,6 +232,11 @@ class _CameraEncoder:
             '-c:v', 'mjpeg',
             '-framerate', f'{fps:.6f}',
             '-i', 'pipe:0',
+        ]
+        if self.size is not None:
+            w, h = self.size
+            cmd += ['-vf', f'scale={w}:{h}']
+        cmd += [
             '-c:v', 'hevc_nvenc',
             '-pix_fmt', 'yuv420p',
             '-preset', 'p4',
@@ -138,11 +263,18 @@ class _CameraEncoder:
             self.failed = True
             self.buffer = []
             return
-        print(f'[recorder] Encoding video {self.name} (~{self.fps:.0f} fps) '
-              f'-> {self.out_path}')
+        size_note = f', {self.size[0]}x{self.size[1]}' if self.size else ''
+        if self.fps_limit is not None and est > self.fps_limit + 0.05:
+            fps_note = f'{est:.0f}->{self.fps:.0f}'
+        else:
+            fps_note = f'{self.fps:.0f}'
+        print(f'[recorder] Encoding video {self.name} (~{fps_note} fps'
+              f'{size_note}) -> {self.out_path}')
         self.started = True
-        for jpeg, _ in self.buffer:
-            self._write(jpeg)
+        self._next_keep_t = None
+        for jpeg, t in self.buffer:
+            if self._should_keep(t):
+                self._write(jpeg)
         self.buffer = []
 
     def _write(self, jpeg):
@@ -224,7 +356,7 @@ class Recorder:
 
     def __init__(self, path, max_file_size_mb, host='127.0.0.1', port=5678,
                  compression_level=10, embed_video=False, encode_video=False,
-                 with_timeseries=True):
+                 with_timeseries=True, encode_size=None, encode_fps=None):
         self.path = str(path)
         self.url = f'ws://{host}:{port}/'
         self._host = host
@@ -233,6 +365,8 @@ class Recorder:
         self.max_file_size_mb = max_file_size_mb
         self.embed_video = embed_video
         self.encode_video = encode_video
+        self.encode_size = encode_size  # (w, h) or None
+        self.encode_fps = encode_fps    # float or None
         self.with_timeseries = with_timeseries
 
         self._ws = None
@@ -351,7 +485,9 @@ class Recorder:
             if enc is None:
                 stem = Path(self.path).with_suffix('')
                 out_path = f'{stem}_{_safe_name(name)}.mp4'
-                enc = _CameraEncoder(name, out_path)
+                enc = _CameraEncoder(
+                    name, out_path,
+                    size=self.encode_size, fps_limit=self.encode_fps)
                 self._encoders[name] = enc
             enc.feed(jpeg, t)
 
@@ -426,7 +562,13 @@ class Recorder:
         print(f'[recorder] Recording to {self.path}')
         if self.encode_video:
             stem = Path(self.path).with_suffix('')
-            print(f'[recorder] Encoding H.265 video per camera to '
+            opts = []
+            if self.encode_size is not None:
+                opts.append(f'{self.encode_size[0]}x{self.encode_size[1]}')
+            if self.encode_fps is not None:
+                opts.append(f'≤{self.encode_fps:g} fps')
+            opt_note = f" ({', '.join(opts)})" if opts else ''
+            print(f'[recorder] Encoding H.265 video per camera{opt_note} to '
                   f'{stem}_<camera>.mp4 (opened when each stream starts)')
         self._capture_frames('_begin')
 
@@ -479,13 +621,27 @@ def main():
     parser.add_argument('--with-embed-video', action='store_true', default=False,
                         help='Embed raw image/video_segment messages in the '
                              'recording (excluded by default)')
-    parser.add_argument('--with-encode-video', action='store_true', default=False,
-                        help="Encode each camera's images into an H.265 .mp4 "
-                             'beside the recording (5s keyframes, GPU hevc_nvenc)')
+    parser.add_argument(
+        '--with-encode-video', nargs='*', default=None,
+        metavar='OPT',
+        help="Encode each camera's images into an H.265 .mp4 beside the "
+             'recording (GPU hevc_nvenc). Optional OPT args: SIZE '
+             '(640x360, 640×360, or 720p/320p/…) and/or FPS (24fps or 24) '
+             'to rescale and/or cap frame rate before encode. '
+             'Example: --with-encode-video 640×360 24fps')
     parser.add_argument('--without-timeseries', action='store_true', default=False,
                         help='Do not log timeseries (sample/depth) data to the '
                              'recording (logged by default)')
     args = parser.parse_args()
+
+    encode_video = args.with_encode_video is not None
+    encode_size, encode_fps = None, None
+    if encode_video:
+        try:
+            encode_size, encode_fps = parse_encode_video_args(
+                args.with_encode_video)
+        except ValueError as e:
+            parser.error(str(e))
 
     # The path is a template filled per recording section (see _fill_template):
     # its "{timestamp}" placeholder is replaced with the moment SPACE starts the
@@ -500,7 +656,9 @@ def main():
         port=args.port,
         compression_level=args.compression_level,
         embed_video=args.with_embed_video,
-        encode_video=args.with_encode_video,
+        encode_video=encode_video,
+        encode_size=encode_size,
+        encode_fps=encode_fps,
         with_timeseries=not args.without_timeseries,
     )
 

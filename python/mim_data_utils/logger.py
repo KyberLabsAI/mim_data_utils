@@ -1,3 +1,4 @@
+import atexit
 import os
 import time
 import uuid
@@ -31,6 +32,41 @@ _SETUP_TYPES = ('setup',)
 
 # Session name used when the producer does not specify one.
 DEFAULT_SESSION = 'Default'
+
+
+def resolve_shm_items(items):
+    """Inline shared-memory payload references.
+
+    Log items produced with `Logger(image_shm=True)` carry
+    ``{'shm': {field: ref, ...}}`` instead of the payload bytes of those
+    fields (images: 'payload'; depth frames: 'depth' and 'rgb'). Consumers
+    that need the payloads embedded (file logs, websocket forwarding) call
+    this to fetch the bytes back into their fields. Items with any payload
+    no longer available (ring wrapped past the reference or the writer
+    restarted) are dropped.
+    """
+    if not any(isinstance(it, dict) and 'shm' in it for it in items):
+        return items
+
+    from kyber_utils.shared_image_buffer import resolve_shm_ref
+    out = []
+    for it in items:
+        if not (isinstance(it, dict) and 'shm' in it):
+            out.append(it)
+            continue
+        fields = {}
+        for field, ref in it['shm'].items():
+            payload = resolve_shm_ref(ref)
+            if payload is None:
+                fields = None
+                break
+            fields[field] = payload
+        if fields is None:
+            continue
+        it = {k: v for k, v in it.items() if k != 'shm'}
+        it.update(fields)
+        out.append(it)
+    return out
 
 
 class FileLoggerWriter:
@@ -97,6 +133,11 @@ class FileLoggerWriter:
 
         if self.is_full:
             return
+
+        # Files must be self-contained: inline any shared-memory image
+        # references before writing (references are only valid live, on the
+        # producing machine).
+        data = resolve_shm_items(data)
 
         data_msgp = ormsgpack.packb(data, option=ormsgpack.OPT_SERIALIZE_NUMPY)
         header = struct.pack('>I', len(data_msgp))
@@ -417,11 +458,26 @@ class Logger(threading.Thread):
         return SubprocessWriter()
 
     def __init__(self, server, layout_def=None, start=True, make_session_active=True,
-                 session=None):
+                 session=None, image_shm=True, image_shm_slots=8,
+                 image_shm_slot_mb=4):
         super().__init__()
 
         self.server = server
         self.session_name = session or DEFAULT_SESSION
+
+        # Ship log_image payloads via a shared-memory ring instead of inline
+        # zeromq bytes: the message then carries only a small reference, and
+        # the server reads the payload lazily — only when it actually forwards
+        # the frame to a viewer (nothing is read under backpressure). Requires
+        # producer and server on the same machine; falls back to inline
+        # payloads automatically if the ring cannot be set up.
+        # `image_shm_slots` is the ring depth: how many recent frames stay
+        # readable while their references are in flight.
+        self.image_shm = image_shm
+        self.image_shm_slots = image_shm_slots
+        self.image_shm_slot_mb = image_shm_slot_mb
+        self._image_rings = {}
+        self._image_shm_warned = False
 
         # Only identifies who registered a setup, for debugging. Registered
         # setups outlive the producer: like the timeseries and images already
@@ -635,12 +691,50 @@ class Logger(threading.Thread):
         })
 
     def log_image(self, name, data, time):
-        self._append_log({
+        item = {
             'type': 'image',
             'time': time,
             'name': name,
-            'payload': data
-        })
+        }
+        ref = self._shm_write(name, data)
+        if ref is not None:
+            item['shm'] = {'payload': ref}
+        else:
+            item['payload'] = data
+        self._append_log(item)
+
+    def _shm_write(self, key, data):
+        """Write a payload into the shared-memory ring for `key`.
+
+        Returns the reference dict to send instead of the payload, or None to
+        fall back to inline bytes (shm disabled, setup failed, or the payload
+        exceeds the slot size). Rings are created lazily per key; the slot
+        size adapts to the first payload (with headroom), so raw depth frames
+        fit regardless of resolution.
+        """
+        if not self.image_shm:
+            return None
+        data = data if isinstance(data, bytes) else bytes(data)
+        try:
+            ring = self._image_rings.get(key)
+            if ring is None:
+                from kyber_utils.shared_image_buffer import SharedBytesRingWriter
+                mb = 1024 * 1024
+                slot_size = max(self.image_shm_slot_mb * mb,
+                                -(len(data) * 3 // 2 // -mb) * mb)
+                ring = SharedBytesRingWriter(
+                    f'/mim_log/{self.session_name}/{key}',
+                    slot_size=slot_size,
+                    n_slots=self.image_shm_slots)
+                self._image_rings[key] = ring
+                atexit.register(ring.close)
+            return ring.write(data)
+        except Exception as e:
+            if not self._image_shm_warned:
+                print(f"[logger] shm ring unavailable for '{key}' ({e}); "
+                      f"sending payload inline")
+                self._image_shm_warned = True
+            return None
 
     def log_depth(self, name, depth_u16, time, rgb_jpeg=None,
                   depth_scale=None, intrinsics=None):
@@ -658,19 +752,37 @@ class Logger(threading.Thread):
             and depth_u16.ndim == 2, \
             'log_depth requires a 2D uint16 numpy array'
         h, w = depth_u16.shape
-        self._append_log({
+        item = {
             'type': 'depth',
             'time': time,
             'name': name,
             'width': int(w),
             'height': int(h),
             'depth_encoding': 'u16le',
-            'depth': np.ascontiguousarray(depth_u16).tobytes(),
             'depth_scale': depth_scale,
             'rgb_encoding': 'jpeg' if rgb_jpeg is not None else None,
-            'rgb': rgb_jpeg,
+            'rgb': None,
             'intrinsics': intrinsics,
-        })
+        }
+        # The heavy payloads (raw depth ~2 MB/frame, rgb overlay) go through
+        # the shared-memory ring like log_image; each falls back to inline
+        # bytes independently.
+        refs = {}
+        depth_bytes = np.ascontiguousarray(depth_u16).tobytes()
+        ref = self._shm_write(f'{name}/depth', depth_bytes)
+        if ref is not None:
+            refs['depth'] = ref
+        else:
+            item['depth'] = depth_bytes
+        if rgb_jpeg is not None:
+            ref = self._shm_write(f'{name}/depth_rgb', rgb_jpeg)
+            if ref is not None:
+                refs['rgb'] = ref
+            else:
+                item['rgb'] = rgb_jpeg
+        if refs:
+            item['shm'] = refs
+        self._append_log(item)
 
     def log_video_segment(self, name, segment_info, init_file, base_url):
         self._append_log({
