@@ -128,7 +128,6 @@ function parseSetup(sd, data) {
         sd.traces.staticData.clear();
         if (active) {
             scene.clear();
-            scene.addObject(new Plane3D('plane'));
         }
         return true;
     }

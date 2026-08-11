@@ -1,3 +1,7 @@
+// Unused: the viewer no longer adds a default ground plane. It was added
+// unconditionally at startup and on every scene clear/rebuild, which put a gray
+// 0x808080 quad under every scene -- confusing when a session logs its own
+// floor (you saw two). Kept here so a scene can opt into a shadow catcher.
 class Plane3D {
     constructor(name) {
         this.name = name;

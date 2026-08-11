@@ -112,7 +112,6 @@ class SessionData {
             isFrozen = false;
             layout.zoomX = null;
             scene.clear();
-            scene.addObject(new Plane3D('plane'));
             scene.setTime(null);
             updateLayout();
         }
@@ -172,7 +171,6 @@ function restoreSceneCameras(cameras3d) {
 // same payloads the live registration path uses).
 function rebuildSceneForSession(sd) {
     scene.clear();
-    scene.addObject(new Plane3D('plane'));
     sd.traces.staticData.forEach(payload => buildSceneObjectFromStatic(payload));
     applySceneVisibility();
 }

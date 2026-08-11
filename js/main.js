@@ -83,8 +83,6 @@ let forcePlotRefresh = true;
 layoutDom.value = currentSession.settings.plotLayout;
 
 let scene = new Scene3D(document.getElementById('viewer'));
-let plane = new Plane3D('plane')
-scene.addObject(plane)
 
 const PANEL_LAYOUT_STORAGE_KEY = 'panelLayout';
 const DEFAULT_PANEL_LAYOUT = 't|3d/img';
