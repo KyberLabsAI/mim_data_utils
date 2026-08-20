@@ -365,6 +365,14 @@ class WebsocketWriter:
                 self.setup_publisher = None
 
     def wait_for_client(self, timeout_s=5):
+        # The publishers are created lazily on the first log(), which happens
+        # on the Logger thread. A caller that constructs a Logger and asks for
+        # the client count right away can get here first, so connect now
+        # instead of relying on winning that race.
+        with self._lock:
+            if self.publisher is None:
+                self.init()
+
         tic = time.time()
 
         while time.time() < tic + timeout_s:
@@ -513,14 +521,24 @@ class Logger(threading.Thread):
 
     def run(self):
         while self.keep_running:
-            self.flush()
+            # Block until there is something to send instead of waking 1000x
+            # a second to find an empty queue. The timeout is only so that
+            # keep_running still gets checked while nothing is being logged.
+            try:
+                first_item = self.log_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            # Give producers the same ~1ms window the old poll loop gave them
+            # to enqueue more, so batch sizes and send rate stay as they were.
             time.sleep(0.001)
+            self.flush(first_item)
 
     _flush_debug_last_print = 0
 
-    def flush(self):
+    def flush(self, first_item=None):
         # Only send data if there is any.
-        item_to_log = []
+        item_to_log = [] if first_item is None else [first_item]
         while True:
             try:
                 item_to_log.append(self.log_queue.get_nowait())
