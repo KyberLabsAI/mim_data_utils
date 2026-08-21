@@ -25,6 +25,11 @@ _TIMESERIES_TYPES = {b'sample', b'depth', 'sample', 'depth'}
 _FPS_ESTIMATE_FRAMES = 15
 # Force a keyframe every this many seconds of video.
 _KEYFRAME_INTERVAL_S = 2
+# Constant-quality level for hevc_nvenc (-rc vbr -cq N -b:v 0): lower = better
+# quality / bigger file. Without an explicit rate control nvenc targets a fixed
+# ~2 Mbit/s, which is ~10x more than a mostly static 640x480 robot scene needs.
+# Measured on a D405 colour stream: cq 26 ~1.6 Mbit/s, cq 30 ~0.9, cq 34 ~0.5.
+_DEFAULT_ENCODE_CQ = 30
 
 # Named heights (16:9) for --with-encode-video SIZE args like 720p.
 _P_SIZES = {
@@ -91,13 +96,69 @@ def parse_encode_fps(token):
     return fps
 
 
-def parse_encode_video_args(tokens):
-    """Parse optional ``--with-encode-video`` tokens into ``(size, fps_limit)``.
+def parse_encode_cq(token):
+    """Parse a quality token: ``cq30`` (hevc_nvenc constant-quality level, 1-51)."""
+    t = token.strip().lower()
+    if not t.startswith('cq'):
+        raise ValueError(f'invalid encode quality {token!r} (expected e.g. cq30)')
+    try:
+        cq = int(t[2:])
+    except ValueError as e:
+        raise ValueError(f'invalid encode quality {token!r} (expected e.g. cq30)') from e
+    if not 1 <= cq <= 51:
+        raise ValueError(f'encode quality must be in 1..51, got {token!r}')
+    return cq
 
-    Tokens may be SIZE (``640x360`` / ``720p``) and/or FPS (``24fps`` / ``24``),
-    in either order. Missing values are ``None`` (native size / estimated fps).
+
+def parse_encode_denoise(token):
+    """Parse a denoise token: ``denoise`` (hqdn3d default strength 4) or
+    ``denoiseN`` with luma spatial strength N (1..20); the other hqdn3d
+    parameters follow ffmpeg's default ratios (chroma 0.75 N, temporal 1.5 N,
+    chroma temporal 1.125 N). Returns the ffmpeg filter string."""
+    t = token.strip().lower()
+    if not t.startswith('denoise'):
+        raise ValueError(f'invalid denoise token {token!r} (expected denoise or denoiseN)')
+    rest = t[len('denoise'):]
+    if rest == '':
+        n = 4.0
+    else:
+        try:
+            n = float(rest)
+        except ValueError as e:
+            raise ValueError(f'invalid denoise strength {token!r} (expected e.g. denoise6)') from e
+        if not 1 <= n <= 20:
+            raise ValueError(f'denoise strength must be in 1..20, got {token!r}')
+    return f'hqdn3d={n:g}:{0.75 * n:g}:{1.5 * n:g}:{1.125 * n:g}'
+
+
+def parse_encode_keyframe(token):
+    """Parse a keyframe-interval token: ``kf5`` = a keyframe every 5 s
+    (0.5..60). Longer intervals shrink the file (a lot at low resolution/fps,
+    where keyframes dominate) at the cost of coarser seeking and a longer wait
+    for a viewer joining a live stream."""
+    t = token.strip().lower()
+    if not t.startswith('kf'):
+        raise ValueError(f'invalid keyframe token {token!r} (expected e.g. kf5)')
+    try:
+        k = float(t[2:])
+    except ValueError as e:
+        raise ValueError(f'invalid keyframe interval {token!r} (expected e.g. kf5)') from e
+    if not 0.5 <= k <= 60:
+        raise ValueError(f'keyframe interval must be in 0.5..60 s, got {token!r}')
+    return k
+
+
+def parse_encode_video_args(tokens):
+    """Parse optional ``--with-encode-video`` tokens into
+    ``(size, fps_limit, cq, denoise, keyframe_s)``.
+
+    Tokens may be SIZE (``640x360`` / ``720p``), FPS (``24fps`` / ``24``),
+    quality (``cq30``), ``denoise``/``denoiseN`` (hqdn3d before encode; sensor
+    noise is what costs bits on a static scene) and/or ``kfN`` (keyframe every
+    N seconds), in any order. Missing values are ``None`` (native size /
+    estimated fps / default cq / no denoise / default keyframe interval).
     """
-    size, fps = None, None
+    size, fps, cq, denoise, kf = None, None, None, None, None
     for tok in tokens:
         t = tok.strip().lower().replace('×', 'x')
         is_size = ('x' in t) or (t.endswith('p') and t[:-1].isdigit())
@@ -111,11 +172,24 @@ def parse_encode_video_args(tokens):
             if fps is not None:
                 raise ValueError(f'duplicate encode fps: {tok!r}')
             fps = parse_encode_fps(tok)
+        elif t.startswith('cq'):
+            if cq is not None:
+                raise ValueError(f'duplicate encode quality: {tok!r}')
+            cq = parse_encode_cq(tok)
+        elif t.startswith('denoise'):
+            if denoise is not None:
+                raise ValueError(f'duplicate denoise option: {tok!r}')
+            denoise = parse_encode_denoise(tok)
+        elif t.startswith('kf'):
+            if kf is not None:
+                raise ValueError(f'duplicate keyframe option: {tok!r}')
+            kf = parse_encode_keyframe(tok)
         else:
             raise ValueError(
                 f'unrecognized --with-encode-video argument: {tok!r} '
-                f'(expected SIZE like 640x360/720p and/or FPS like 24fps)')
-    return size, fps
+                f'(expected SIZE like 640x360/720p, FPS like 24fps, quality like cq30 '
+                f'denoise/denoiseN and/or keyframe interval like kf5)')
+    return size, fps, cq, denoise, kf
 
 
 def _safe_name(name):
@@ -162,11 +236,15 @@ class _CameraEncoder:
     so a limit never poisons the measurement.
     """
 
-    def __init__(self, name, out_path, size=None, fps_limit=None):
+    def __init__(self, name, out_path, size=None, fps_limit=None, cq=None,
+                 denoise=None, keyframe_s=None):
         self.name = name
         self.out_path = out_path
         self.size = size  # (w, h) or None
         self.fps_limit = fps_limit  # float or None
+        self.cq = _DEFAULT_ENCODE_CQ if cq is None else cq
+        self.denoise = denoise  # ffmpeg filter string (hqdn3d=...) or None
+        self.keyframe_s = _KEYFRAME_INTERVAL_S if keyframe_s is None else keyframe_s
         self.proc = None
         self.started = False
         self.failed = False
@@ -233,16 +311,27 @@ class _CameraEncoder:
             '-framerate', f'{fps:.6f}',
             '-i', 'pipe:0',
         ]
+        vf = []
+        if self.denoise:
+            vf.append(self.denoise)   # denoise at source resolution, before scaling
         if self.size is not None:
             w, h = self.size
-            cmd += ['-vf', f'scale={w}:{h}']
+            vf.append(f'scale={w}:{h}')
+        if vf:
+            cmd += ['-vf', ','.join(vf)]
         cmd += [
             '-c:v', 'hevc_nvenc',
             '-pix_fmt', 'yuv420p',
-            '-preset', 'p4',
-            '-g', str(max(1, round(fps * _KEYFRAME_INTERVAL_S))),
+            '-preset', 'p5',
+            '-tune', 'hq',
+            # Constant quality VBR: bits go where the picture changes. -b:v 0
+            # lets cq drive the size; maxrate only caps pathological bursts.
+            '-rc', 'vbr', '-cq', str(self.cq), '-b:v', '0',
+            '-maxrate', '6M', '-bufsize', '12M',
+            '-spatial-aq', '1',
+            '-g', str(max(1, round(fps * self.keyframe_s))),
             '-force_key_frames',
-            f'expr:gte(t,n_forced*{_KEYFRAME_INTERVAL_S})',
+            f'expr:gte(t,n_forced*{self.keyframe_s:g})',
             # Fragmented MP4: write self-contained fragments as we go so the
             # file is valid/playable while still being recorded.  A fragment is
             # cut at every keyframe or after 1s, whichever comes first, and
@@ -356,7 +445,8 @@ class Recorder:
 
     def __init__(self, path, max_file_size_mb, host='127.0.0.1', port=5678,
                  compression_level=10, embed_video=False, encode_video=False,
-                 with_timeseries=True, encode_size=None, encode_fps=None):
+                 with_timeseries=True, encode_size=None, encode_fps=None,
+                 encode_cq=None, encode_denoise=None, encode_keyframe_s=None):
         self.path = str(path)
         self.url = f'ws://{host}:{port}/'
         self._host = host
@@ -367,6 +457,9 @@ class Recorder:
         self.encode_video = encode_video
         self.encode_size = encode_size  # (w, h) or None
         self.encode_fps = encode_fps    # float or None
+        self.encode_cq = encode_cq      # int or None (default _DEFAULT_ENCODE_CQ)
+        self.encode_denoise = encode_denoise  # hqdn3d filter string or None
+        self.encode_keyframe_s = encode_keyframe_s  # seconds or None (default 2 s)
         self.with_timeseries = with_timeseries
 
         self._ws = None
@@ -487,7 +580,9 @@ class Recorder:
                 out_path = f'{stem}_{_safe_name(name)}.mp4'
                 enc = _CameraEncoder(
                     name, out_path,
-                    size=self.encode_size, fps_limit=self.encode_fps)
+                    size=self.encode_size, fps_limit=self.encode_fps,
+                    cq=self.encode_cq, denoise=self.encode_denoise,
+                    keyframe_s=self.encode_keyframe_s)
                 self._encoders[name] = enc
             enc.feed(jpeg, t)
 
@@ -567,6 +662,11 @@ class Recorder:
                 opts.append(f'{self.encode_size[0]}x{self.encode_size[1]}')
             if self.encode_fps is not None:
                 opts.append(f'≤{self.encode_fps:g} fps')
+            opts.append(f'cq{_DEFAULT_ENCODE_CQ if self.encode_cq is None else self.encode_cq}')
+            if self.encode_denoise:
+                opts.append(self.encode_denoise)
+            if self.encode_keyframe_s is not None:
+                opts.append(f'keyframe every {self.encode_keyframe_s:g}s')
             opt_note = f" ({', '.join(opts)})" if opts else ''
             print(f'[recorder] Encoding H.265 video per camera{opt_note} to '
                   f'{stem}_<camera>.mp4 (opened when each stream starts)')
@@ -635,10 +735,10 @@ def main():
     args = parser.parse_args()
 
     encode_video = args.with_encode_video is not None
-    encode_size, encode_fps = None, None
+    encode_size, encode_fps, encode_cq, encode_denoise, encode_kf = None, None, None, None, None
     if encode_video:
         try:
-            encode_size, encode_fps = parse_encode_video_args(
+            encode_size, encode_fps, encode_cq, encode_denoise, encode_kf = parse_encode_video_args(
                 args.with_encode_video)
         except ValueError as e:
             parser.error(str(e))
@@ -659,6 +759,9 @@ def main():
         encode_video=encode_video,
         encode_size=encode_size,
         encode_fps=encode_fps,
+        encode_cq=encode_cq,
+        encode_denoise=encode_denoise,
+        encode_keyframe_s=encode_kf,
         with_timeseries=not args.without_timeseries,
     )
 

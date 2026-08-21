@@ -13,6 +13,7 @@ import struct
 import ormsgpack
 
 import queue
+import collections
 import multiprocessing
 
 from .scene import RawMesh, Scene, PointCloud
@@ -494,8 +495,16 @@ class Logger(threading.Thread):
 
         server.set_session(self.session_name)
 
-        self.log_queue = queue.Queue()
+        # Lock-free hand-off from the producers (the 1 kHz control thread) to
+        # this consumer thread: deque.append()/popleft() are atomic under the
+        # GIL, so the producer never blocks on a lock that this thread might be
+        # holding while descheduled (queue.Queue.put() took the queue lock and
+        # caused ms-scale priority-inversion stalls in the control loop).
+        self.log_queue = collections.deque()
         self.loggable_value_classes = [RawMesh, Scene, PointCloud]
+        # Per-dict cache of the loggable-key classification, see _log_dict().
+        self._log_dict_cache = {}
+        self.flush_stats = self._new_flush_stats()
 
         # Launching a session announces it to the server (registering it in
         # the live-session list, evicting the stalest one if there are more
@@ -516,6 +525,19 @@ class Logger(threading.Thread):
         if start:
             self.start()
 
+    @staticmethod
+    def _new_flush_stats():
+        return {'n': 0, 'items': 0, 'max_s': 0., 'max_items': 0, 'n_over_2ms': 0, 'sum_s': 0.}
+
+    def queue_depth(self):
+        """Number of log items waiting to be flushed by the logger thread."""
+        return len(self.log_queue)
+
+    def pop_flush_stats(self):
+        """Return and reset the flush timing statistics (see flush())."""
+        st, self.flush_stats = self.flush_stats, self._new_flush_stats()
+        return st
+
     def _send_data(self, data):
         self.server.log(data)
 
@@ -524,15 +546,13 @@ class Logger(threading.Thread):
             # Block until there is something to send instead of waking 1000x
             # a second to find an empty queue. The timeout is only so that
             # keep_running still gets checked while nothing is being logged.
-            try:
-                first_item = self.log_queue.get(timeout=0.2)
-            except queue.Empty:
+            # Poll the deque (no lock, no condition variable to wake on). A
+            # 3 ms cadence batches ~3 control-loop samples per message, about
+            # what the previous "first item + 1 ms" strategy produced.
+            time.sleep(0.003)
+            if not self.log_queue:
                 continue
-
-            # Give producers the same ~1ms window the old poll loop gave them
-            # to enqueue more, so batch sizes and send rate stay as they were.
-            time.sleep(0.001)
-            self.flush(first_item)
+            self.flush()
 
     _flush_debug_last_print = 0
 
@@ -541,27 +561,42 @@ class Logger(threading.Thread):
         item_to_log = [] if first_item is None else [first_item]
         while True:
             try:
-                item_to_log.append(self.log_queue.get_nowait())
-            except queue.Empty:
+                item_to_log.append(self.log_queue.popleft())
+            except IndexError:
                 break
 
         if len(item_to_log) > 0:
+            t_send0 = time.perf_counter()
             now = time.time()
             img_count = sum(1 for item in item_to_log if item.get('type') == 'image')
             if now - Logger._flush_debug_last_print >= 2.0 and img_count > 0:
                 # Check age of images in queue
                 img_ages = [now - item['time'] for item in item_to_log if item.get('type') == 'image']
-                print(f"[logger-flush] queue_depth={self.log_queue.qsize()}, "
+                print(f"[logger-flush] queue_depth={self.queue_depth()}, "
                       f"flushing {len(item_to_log)} items ({img_count} imgs), "
                       f"img_age: avg={sum(img_ages)/len(img_ages):.3f}s max={max(img_ages):.3f}s")
                 Logger._flush_debug_last_print = now
             self._send_data(item_to_log)
+            # Flush timing (the pack + zmq send holds the GIL): exposed as
+            # flush_stats for the control-loop health reporter.
+            dt = time.perf_counter() - t_send0
+            if not hasattr(self, 'flush_stats'):
+                self.flush_stats = self._new_flush_stats()
+            st = self.flush_stats
+            st['n'] += 1
+            st['items'] += len(item_to_log)
+            if dt > st['max_s']:
+                st['max_s'] = dt
+                st['max_items'] = len(item_to_log)
+            if dt > 0.002:
+                st['n_over_2ms'] += 1
+            st['sum_s'] += dt
 
     def _append_log(self, data):
         # Every item carries its session so the viewer can file it into the
         # right per-session store.
         data.setdefault('session', self.session_name)
-        self.log_queue.put(data)
+        self.log_queue.append(data)
 
     def activate_session(self):
         # Goes through the '/setup/' channel: the server unpacks setup items,
@@ -657,42 +692,113 @@ class Logger(threading.Thread):
     def layout(self, layout_def):
         self.register_setting('layout', 'layout', layout_def)
 
-    def _log_dict(self, obj, silent_error):
-        # Creating a copy so changing the original object's keys doesn't 
-        # interfer with the loggin.
-        obj = dict(obj)  
+    # How often (in calls per dict) the cached classification is rebuilt from
+    # scratch so that attributes added later, or attributes whose type changed,
+    # are picked up. At 1 kHz this is once per second.
+    _LOG_DICT_CACHE_REFRESH = 1000
+
+    # Value kinds stored in the classification cache.
+    _K_TIME, _K_SCALAR, _K_NPGENERIC, _K_ARRAY, _K_LOGGABLE, _K_LIST = range(6)
+
+    def _classify_value(self, key, value, silent_error):
+        """Return the kind code for a (key, value) pair or None to skip it."""
+        val_type = type(value)
+
+        if key == 'time':  # HACK: Time is just a value, not an array.
+            return self._K_TIME
+        if key.startswith('_'):
+            return None
+        if issubclass(val_type, (float, int, bool, str)):
+            return self._K_SCALAR
+        if issubclass(val_type, np.generic):
+            return self._K_NPGENERIC
+        if issubclass(val_type, np.ndarray) and value.ndim == 1:
+            return self._K_ARRAY
+        # elif issubclass(val_type, dict):
+        #     for dk, dv in value.items():
+        #         if dk.startswith('_') or dk.endswith('_'):
+        #             continue
+        #         self.log(dk, dv, prefix=f"{key}/")
+        if issubclass(val_type, tuple(self.loggable_value_classes)):
+            return self._K_LOGGABLE
+        if issubclass(val_type, list):
+            if len(value) > 0 and not np.isscalar(value[0]):
+                return None
+            return self._K_LIST
+        if not silent_error:
+            raise ValueError(f"Asked to log unsupported value ({str(value)}) for path '{key}'.")
+        return None
+
+    def _log_dict_convert(self, res, key, value, kind):
+        if kind == self._K_TIME or kind == self._K_SCALAR:
+            res[key] = value
+        elif kind == self._K_NPGENERIC:
+            res[key] = float(value)
+        elif kind == self._K_ARRAY:
+            res[key] = value.copy()
+        elif kind == self._K_LOGGABLE:
+            res[key] = value.to_log_dict(key)
+        elif kind == self._K_LIST:
+            res[key] = np.array(value, np.float32).copy()
+
+    def _log_dict_slow(self, obj, silent_error):
+        """Full scan: classify every entry and return (res, cache_items)."""
         res = {}
-
+        items = []
         for key, value in obj.items():
-            val_type = type(value)
-
-            if key == 'time':  # HACK: Time is just a value, not an array.
-                res['time'] = value
+            kind = self._classify_value(key, value, silent_error)
+            if kind is None:
                 continue
+            items.append((key, kind))
+            self._log_dict_convert(res, key, value, kind)
+        return res, items
 
-            if key.startswith('_'):
-                continue
+    def _log_dict(self, obj, silent_error):
+        """Convert a dict of values into the loggable payload.
 
-            if issubclass(val_type, (float, int, bool, str)):
-                res[key] = value
-            elif issubclass(val_type, np.generic):
-                res[key] = float(value)
-            elif issubclass(val_type, np.ndarray) and value.ndim == 1:
-                res[key] = value.copy()
-            # elif issubclass(val_type, dict):
-            #     for dk, dv in value.items():
-            #         if dk.startswith('_') or dk.endswith('_'):
-            #             continue
-            #         self.log(dk, dv, prefix=f"{key}/")
-            elif issubclass(val_type,  tuple(self.loggable_value_classes)):
-                res[key] = value.to_log_dict(key)
-            elif issubclass(val_type, list):
-                if len(value) > 0 and not np.isscalar(value[0]):
-                    continue
-                res[key] = np.array(value, np.float32).copy()
-            elif not silent_error:
-                raise ValueError(f"Asked to log unsupported value ({str(value)}) for path '{key}'.")
+        Typical use is ``logger.log(controller.__dict__, t)`` at 1 kHz: the
+        dict has 100+ entries, most of them not loggable (heads, helpers,
+        objects), and the type dispatch gives the same answer every call.
+        The classification is therefore cached per dict (keyed by the dict's
+        identity) and the per-call work is reduced to copying the loggable
+        values. The cache is rebuilt when the number of keys changes, when a
+        cached value no longer has the expected type, or every
+        ``_LOG_DICT_CACHE_REFRESH`` calls.
+        """
+        # Plain dict copy so that a producer mutating the dict's keys while
+        # we iterate (other thread) doesn't break the iteration.
+        cache_key = id(obj)
+        cache = self._log_dict_cache.get(cache_key)
+        n_keys = len(obj)
 
+        if cache is not None and cache['n_keys'] == n_keys and cache['age'] < self._LOG_DICT_CACHE_REFRESH:
+            cache['age'] += 1
+            res = {}
+            get = obj.get
+            try:
+                for key, kind in cache['items']:
+                    value = get(key, self)   # self = sentinel for "missing"
+                    if value is self:
+                        raise KeyError(key)
+                    if kind == self._K_ARRAY:
+                        if type(value) is not np.ndarray or value.ndim != 1:
+                            raise TypeError(key)
+                        res[key] = value.copy()
+                    elif kind == self._K_SCALAR or kind == self._K_TIME:
+                        res[key] = value
+                    else:
+                        self._log_dict_convert(res, key, value, kind)
+                return res
+            except (KeyError, TypeError, AttributeError):
+                pass  # Stale cache -> fall through to the full scan.
+
+        obj = dict(obj)
+        res, items = self._log_dict_slow(obj, silent_error)
+        # Bound the cache: it is keyed by id(), so dicts that died and whose id
+        # got reused just trigger one extra rebuild.
+        if len(self._log_dict_cache) > 64:
+            self._log_dict_cache.clear()
+        self._log_dict_cache[cache_key] = {'n_keys': len(obj), 'age': 0, 'items': items}
         return res
 
     def log(self, obj, time, silent_error=False):

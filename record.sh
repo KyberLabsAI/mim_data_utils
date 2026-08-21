@@ -13,6 +13,16 @@ mkdir -p "$RECORDINGS_DIR"
 #   ./record.sh --with-encode-video 640x360 24fps
 #   ./record.sh --with-encode-video 720p 24fps
 #   ./record.sh --with-encode-video 320p
+#   ./record.sh --with-encode-video 480x360 15fps cq32   # ~50 MB per 30 min
+#   ./record.sh --with-encode-video 480x360 15fps cq32 denoise   # ~36 MB per 30 min
+#   ./record.sh --with-encode-video 480x360 15fps cq32 denoise kf5   # ~25 MB per 30 min
+# kfN: keyframe every N s (default 2). Longer = smaller file (keyframes dominate
+# at low res/fps) but coarser seeking and up to N s until a live viewer decodes.
+# denoise / denoiseN applies ffmpeg hqdn3d (default strength 4) before the
+# encoder: sensor noise is what costs bits on a mostly static scene (~-35%).
+# Video is H.265 (hevc_nvenc) in constant-quality mode; cqNN picks the level
+# (default cq30; lower = better/bigger: cq26 ~1.6 Mbit/s, cq30 ~0.9, cq34 ~0.5
+# at 640x480 on the D405 colour stream).
 python "$SCRIPT_DIR/python/mim_data_utils/recorder.py" \
     "$RECORDINGS_DIR/mim_{timestamp}.zst" \
     "$@"
