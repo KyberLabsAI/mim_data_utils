@@ -128,6 +128,7 @@ class FileLoggerWriter:
     def flush(self):
         self.compressor.flush(zstandard.FLUSH_FRAME)
 
+
     def log(self, data):
         if self.child:
             self.child.log(data)
@@ -200,7 +201,12 @@ class FileLoggerReader:
 
             next_size = struct.unpack('>I', header)[0]
 
-            self.buffer = ormsgpack.unpackb(self.reader.read(next_size))
+            items = ormsgpack.unpackb(self.reader.read(next_size))
+            # Recordings made from the websocket stream contain columnar
+            # 'sample_batch' items; hand them out as plain samples.
+            self.buffer = [x for it in items for x in (
+                expand_sample_batch(it)
+                if isinstance(it, dict) and it.get('type') == 'sample_batch' else [it])]
 
         # Return the first entry from the buffered reads. Convert lists
         # to numpy arrays.
@@ -231,6 +237,91 @@ class FileLoggerReader:
         self.fh.close()
 
 
+# --- Columnar sample batches ---------------------------------------------
+#
+# The viewer's cost is per *sample*: at 1 kHz it decoded ~1000 msgpack dicts
+# of ~80 small float64 lists per second (6.5 MB/s) and did ~80 k key lookups
+# on top -- enough to pin a browser core. The mim server (server.py) therefore
+# bins the 'sample' items it relays into one 'sample_batch' item per 30 ms
+# with one float32 column per key -- on the server, not in the producer: the
+# producer's Logger thread shares the control process's GIL, and packing there
+# cost the 1 kHz loop ~1 ms per bin.
+#
+#   {'type': 'sample_batch', 'session': s, 'n': N,
+#    'times':   <N float64, little-endian bytes>,
+#    'columns': {key: {'d': d, 'f32': <N*d float32 bytes, row-major>}},
+#    'rows':    {key: [N raw values]}}      # non-numeric / irregular keys
+#
+# A key goes to `columns` only when it is present in every sample of the bin
+# with the same numeric shape; everything else (strings, dicts, missing or
+# shape-changing keys) keeps its raw per-sample values in `rows`.
+# `expand_sample_batch` turns a batch back into plain 'sample' items for
+# readers (FileLoggerReader), so recordings keep their old interface.
+
+def pack_sample_batch(samples, session):
+    """samples: list of {'type': 'sample', 'time': float, 'payload': dict}.
+
+    Values may be numpy arrays (producer side) or plain lists/scalars (after
+    a msgpack round trip, as in the server). One np.asarray per key over the
+    whole bin; ragged or non-numeric keys fall back to `rows`.
+    """
+    n = len(samples)
+    times = np.fromiter((float(s['time']) for s in samples), dtype='<f8', count=n)
+    payloads = [s['payload'] for s in samples]
+    # The controller logs the same dict every tick: take the key order of the
+    # first sample and only fall back to a full scan when the key sets differ.
+    keys = list(payloads[0])
+    if any(len(pl) != len(keys) or pl.keys() != payloads[0].keys() for pl in payloads[1:]):
+        keys = list(dict.fromkeys(k for pl in payloads for k in pl))
+    columns, rows = {}, {}
+    for k in keys:
+        try:
+            vals = [pl[k] for pl in payloads]
+        except KeyError:
+            rows[k] = [pl.get(k) for pl in payloads]
+            continue
+        v0 = vals[0]
+        try:
+            if isinstance(v0, np.ndarray):
+                if v0.dtype.kind not in 'fiub':
+                    raise TypeError
+                col = np.asarray(vals, dtype='<f4')          # (n, *shape); raises on ragged
+                col = col.reshape(n, -1)
+            elif isinstance(v0, (bool, int, float, np.generic)):
+                col = np.asarray(vals, dtype='<f4').reshape(n, 1)
+            elif isinstance(v0, (list, tuple)) and v0:
+                col = np.asarray(vals, dtype='<f4').reshape(n, -1)   # raises on ragged/non-numeric
+            else:
+                raise TypeError
+        except (TypeError, ValueError):
+            rows[k] = vals
+            continue
+        if col.shape[1] == 0:
+            rows[k] = vals
+            continue
+        columns[k] = {'d': int(col.shape[1]), 'f32': col.tobytes()}
+    return {'type': 'sample_batch', 'session': session, 'n': n,
+            'times': times.tobytes(), 'columns': columns, 'rows': rows}
+
+
+def expand_sample_batch(item):
+    """Inverse of pack_sample_batch: list of plain 'sample' items."""
+    n = item['n']
+    times = np.frombuffer(item['times'], dtype='<f8')
+    cols = {k: np.frombuffer(c['f32'], dtype='<f4').reshape(n, c['d'])
+            for k, c in item.get('columns', {}).items()}
+    rows = item.get('rows', {})
+    out = []
+    for i in range(n):
+        payload = {k: (float(c[i, 0]) if c.shape[1] == 1 else c[i].astype(np.float64))
+                   for k, c in cols.items()}
+        for k, r in rows.items():
+            payload[k] = r[i]
+        out.append({'type': 'sample', 'time': float(times[i]),
+                    'session': item.get('session'), 'payload': payload})
+    return out
+
+
 class WebsocketWriter:
     # pyzmq sockets are NOT thread-safe. This lock serialises all socket
     # touches (init/close/send) across every thread. Everything that can
@@ -243,7 +334,6 @@ class WebsocketWriter:
         self.setup_publisher = None
         self.num_connected_clients = None
         self._lock = threading.RLock()
-
     def init(self):
         with self._lock:
             assert(self.session_name is not None)

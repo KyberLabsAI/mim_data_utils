@@ -42,6 +42,76 @@ function parseTimeSample(sd, data) {
     return false;
 }
 
+// Legacy per-sample value normalisation (numbers -> [n], bools -> 0/1,
+// "array('d', [...])" strings -> array; other strings are ignored).
+function normalizeSampleValue(value) {
+    let valueType = typeof value;
+    if (valueType === 'boolean') {
+        return [value ? 1 : 0];
+    }
+    if (valueType === 'number') {
+        return [value];
+    }
+    if (valueType == 'string') {
+        if (value.startsWith("array('d', [") || value.startsWith("array('f', [")) {
+            return value.slice(12, -2).split(', ').map(v => parseFloat(v));
+        }
+        return null;
+    }
+    if (value === null || value === undefined) {
+        return null;
+    }
+    return value;
+}
+
+// Typed-array view over a msgpack bin (Uint8Array into the message buffer).
+// Copies to an aligned buffer: Float32Array/Float64Array need a byteOffset
+// that is a multiple of the element size, which a view into the message
+// cannot guarantee.
+function typedFromBin(u8, ctor) {
+    const buf = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    return new ctor(buf);
+}
+
+// Columnar batch of N samples (see pack_sample_batch in logger.py): one
+// float32 column per key instead of N dicts of float64 lists. Decoding cost
+// is per column, not per sample, and the values are recorded through the
+// same Traces API as single samples.
+function parseSampleBatch(sd, data) {
+    const n = data.n;
+    if (!n) {
+        return false;
+    }
+    const times = typedFromBin(data.times, Float64Array);
+    const columns = [];
+    for (const [key, col] of Object.entries(data.columns || {})) {
+        if (key === 'time') {
+            continue;
+        }
+        columns.push({key: key, d: col.d, values: typedFromBin(col.f32, Float32Array)});
+    }
+    const rows = Object.entries(data.rows || {}).filter(([key, _]) => key !== 'time');
+
+    let frozen = sd === currentSession ? isFrozen : sd.frozen;
+    for (let i = 0; i < n; i++) {
+        if (frozen && sd.traces.willEvictFirstData(wsMaxData)) {
+            return false;
+        }
+        sd.traces.beginTimestep(times[i], wsMaxData);
+        for (const c of columns) {
+            sd.traces.record(c.key, c.values.subarray(i * c.d, (i + 1) * c.d));
+        }
+        for (const [key, values] of rows) {
+            const value = normalizeSampleValue(values[i]);
+            if (value !== null) {
+                sd.traces.record(key, value);
+            }
+        }
+        sd.traces.endTimestep();
+    }
+    return false;
+}
+
 // A setting is a viewer configuration the producer registered for the session.
 // It arrives both live and as part of the setup replay a reconnecting viewer
 // gets, so applying one must be idempotent. Producer settings also update the
@@ -146,7 +216,15 @@ function parsewebSocketData(data) {
     const active = sd === currentSession;
     let relayout = false;
 
-    if (data.type == 'sample') {
+    if (data.type == 'sample_batch') {
+        relayout = parseSampleBatch(sd, data);
+        if (!sd.hasData) {
+            sd.hasData = true;
+            if (active) {
+                firstNewData();
+            }
+        }
+    } else if (data.type == 'sample') {
         if (data.time == 'static') {
             for (let [key, value] of Object.entries(data.payload)) {
                 if (key === 'time') {

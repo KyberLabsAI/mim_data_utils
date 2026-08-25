@@ -19,7 +19,7 @@ import zstandard
 import websocket
 
 _VIDEO_TYPES = {b'image', b'video_segment', 'image', 'video_segment'}
-_TIMESERIES_TYPES = {b'sample', b'depth', 'sample', 'depth'}
+_TIMESERIES_TYPES = {b'sample', b'depth', 'sample', 'depth', b'sample_batch', 'sample_batch'}
 
 # Frames buffered per camera before fps is estimated and ffmpeg is launched.
 _FPS_ESTIMATE_FRAMES = 15

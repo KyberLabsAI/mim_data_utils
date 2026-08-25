@@ -12,10 +12,10 @@ from kyber_utils.zeromq import (
 )
 
 try:
-    from mim_data_utils.logger import resolve_shm_items
+    from mim_data_utils.logger import resolve_shm_items, pack_sample_batch
 except ImportError:
     # server.py can be run as a plain script from the package directory.
-    from logger import resolve_shm_items
+    from logger import resolve_shm_items, pack_sample_batch
 
 class SessionTracker:
     """Live-session bookkeeping: which sessions exist and when each last saw data.
@@ -486,12 +486,65 @@ def run():
         if changed:
             websocket.broadcast(ormsgpack.packb(changed), priority='timeseries')
 
+    # 'sample' items are not relayed one by one: they are binned per session
+    # for SAMPLE_BIN_S and sent as one columnar 'sample_batch' (float32
+    # column per key, see logger.pack_sample_batch). At 1 kHz that turns
+    # ~1000 dicts/s of small float64 lists into ~33 messages/s of typed
+    # arrays -- the viewer's decode cost is per column, not per sample.
+    # Everything else in a timeseries message (static samples, settings,
+    # ...) is forwarded immediately, in order relative to the batches.
+    SAMPLE_BIN_S = 0.03
+    bin_lock = threading.Lock()
+    bins = {}          # session -> [t0, [samples]]
+
+    def flush_bins(force=False):
+        now = time.time()
+        due = []
+        with bin_lock:
+            for session, (t0, samples) in list(bins.items()):
+                if samples and (force or now - t0 >= SAMPLE_BIN_S):
+                    due.append((session, samples))
+                    bins[session] = [now, []]
+        for session, samples in due:
+            batch = pack_sample_batch(samples, session)
+            websocket.broadcast(
+                ormsgpack.packb([batch], option=ormsgpack.OPT_SERIALIZE_NUMPY),
+                priority='timeseries')
+
     def on_timeseries(topic, data):
         session = topic_session(topic)
         if session is None:
             return
         session_tracker.touch(session)
-        websocket.broadcast(data, priority='timeseries')
+        items = ormsgpack.unpackb(data)
+        if not isinstance(items, list):
+            websocket.broadcast(data, priority='timeseries')
+            return
+        passthrough = []
+        with bin_lock:
+            entry = bins.setdefault(session, [time.time(), []])
+            for item in items:
+                if (isinstance(item, dict) and item.get('type') == 'sample'
+                        and not isinstance(item.get('time'), str)):
+                    if not entry[1]:
+                        entry[0] = time.time()
+                    entry[1].append(item)
+                else:
+                    passthrough.append(item)
+        if passthrough:
+            websocket.broadcast(ormsgpack.packb(passthrough), priority='timeseries')
+        flush_bins()
+
+    def bin_flusher():
+        # Flush bins that fell due while no new data arrived (end of a burst).
+        while True:
+            time.sleep(0.005)
+            try:
+                flush_bins()
+            except Exception:
+                traceback.print_exc()
+
+    threading.Thread(target=bin_flusher, name='sample-bin-flusher', daemon=True).start()
 
     sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
     sub_pointcloud = ZmqSubscriber('/pointcloud/', callback=on_pointcloud)
