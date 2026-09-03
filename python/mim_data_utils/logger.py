@@ -1,4 +1,5 @@
 import atexit
+import heapq
 import os
 import time
 import uuid
@@ -174,22 +175,61 @@ def list2numpy(data):
 
 
 class FileLoggerReader:
-    def __init__(self, path, child=None):
+    """Read a `.zst` recording back one entry at a time.
+
+    Entries come out in increasing `time` by default. A recording is not
+    written in time order: several producers log into one session -- the 1 kHz
+    controller state and the 30 Hz 3d scene, say -- and each is monotonic on
+    its own while the interleaving is not, so a plain read walks time
+    backwards at every hand-over.
+
+    To fix that without sorting the whole file, entries are held in a small
+    buffer and released oldest-first once enough has been read past them for
+    an earlier one to be impossible. The buffer grows to cover the
+    out-of-orderness the recording actually shows; needing more than
+    `max_window_s` of it means the timestamps jump (a clock reset, or two
+    unrelated recordings concatenated) and raises rather than silently
+    reordering across the gap.
+
+    Args:
+        raw_order: hand entries back exactly as recorded, no buffering.
+        max_window_s: how much recording time the reorder buffer may span
+            before that is treated as an error.
+    """
+
+    def __init__(self, path, child=None, raw_order=False, max_window_s=2.0):
         self.path = path
         self.buffer = []
+        self.raw_order = bool(raw_order)
+        self.max_window_s = float(max_window_s)
         self._setup()
 
     def _setup(self):
         self.fh = open(self.path, "rb")
         self.dctx = zstandard.ZstdDecompressor()
         self.reader = self.dctx.stream_reader(self.fh)
+        self._reset_order_state()
+
+    def _reset_order_state(self):
+        self._heap = []
+        self._seq = 0            # tie-break, keeps equal stamps in file order
+        self._eof = False
+        self._t_read_max = None  # newest stamp read so far
+        self._t_emitted = None   # newest stamp handed out
+        self._max_backstep = 0.0
+        # Read-ahead kept before releasing the oldest entry. Starts at a
+        # value that covers ordinary interleaving and grows to twice the
+        # largest step backwards actually seen.
+        self._hold = min(0.1, self.max_window_s / 4.0)
 
     def reset(self):
         self.fh.seek(0)
         self.buffer = []
         self.reader = self.dctx.stream_reader(self.fh)
+        self._reset_order_state()
 
-    def next(self):
+    def _next_raw(self):
+        """The next entry in the order it was written."""
         # If there are no more buffered entries, then read the next one.
         if len(self.buffer) == 0:
             header = self.reader.read(4)
@@ -211,6 +251,70 @@ class FileLoggerReader:
         # Return the first entry from the buffered reads. Convert lists
         # to numpy arrays.
         return list2numpy(self.buffer.pop(0))
+
+    @staticmethod
+    def _entry_time(entry):
+        """Numeric stamp of an entry, or None when it has no orderable one
+        (a `'static'` sample, a setup item)."""
+        if not isinstance(entry, dict):
+            return None
+        t = entry.get('time')
+        if isinstance(t, bool) or not isinstance(t, (int, float)):
+            return None
+        return float(t)
+
+    def next(self):
+        if self.raw_order:
+            return self._next_raw()
+
+        while True:
+            if self._heap:
+                t_min = self._heap[0][0]
+                if self._eof or (self._t_read_max - t_min) >= self._hold:
+                    t, _, entry = heapq.heappop(self._heap)
+                    if self._t_emitted is not None and t < self._t_emitted:
+                        raise ValueError(
+                            f'FileLoggerReader: {self._t_emitted - t:.6f} s '
+                            f'step backwards survived the reorder buffer at '
+                            f't={t:.6f}. Raise max_window_s (currently '
+                            f'{self.max_window_s:.3f} s) or pass '
+                            f'raw_order=True to read the file as recorded.')
+                    self._t_emitted = t
+                    return entry
+
+            if self._eof:
+                return None
+
+            entry = self._next_raw()
+            if entry is None:
+                self._eof = True
+                continue
+
+            t = self._entry_time(entry)
+            if t is None:
+                # Not orderable: leave it where the stream put it.
+                t = self._t_read_max if self._t_read_max is not None else 0.0
+
+            if self._t_read_max is None or t >= self._t_read_max:
+                self._t_read_max = t
+            else:
+                back = self._t_read_max - t
+                if back > self._max_backstep:
+                    self._max_backstep = back
+                    self._hold = max(self._hold, 2.0 * back)
+
+            heapq.heappush(self._heap, (t, self._seq, entry))
+            self._seq += 1
+
+            span = self._t_read_max - self._heap[0][0]
+            if span > self.max_window_s:
+                raise ValueError(
+                    f'FileLoggerReader: the reorder buffer would have to span '
+                    f'{span:.3f} s, more than max_window_s='
+                    f'{self.max_window_s:.3f} s. The recording jumps backwards '
+                    f'in time by more than that (a clock reset, or two '
+                    f'recordings concatenated). Pass raw_order=True to read it '
+                    f'as recorded, or raise max_window_s.')
 
     def read_all(self, entry_filter_fn=lambda x: True, reducer_fn=None):
         self.reset()
@@ -261,64 +365,112 @@ class FileLoggerReader:
 def pack_sample_batch(samples, session):
     """samples: list of {'type': 'sample', 'time': float, 'payload': dict}.
 
+    Samples in one bin do not have to share a payload: the controller logs its
+    state and the visualiser logs the 3d scene through the same session, so a
+    bin holds a mix. Each key therefore carries the indices of the samples it
+    appears in (`i`, omitted when it is in all of them) -- a key present in
+    only some samples is still stored columnar over those, and stays *absent*
+    from the others rather than being filled in with None.
+
     Values may be numpy arrays (producer side) or plain lists/scalars (after
-    a msgpack round trip, as in the server). One np.asarray per key over the
-    whole bin; ragged or non-numeric keys fall back to `rows`.
+    a msgpack round trip, as in the server). One np.asarray per key over its
+    samples; ragged or non-numeric keys fall back to `rows`.
     """
     n = len(samples)
     times = np.fromiter((float(s['time']) for s in samples), dtype='<f8', count=n)
     payloads = [s['payload'] for s in samples]
-    # The controller logs the same dict every tick: take the key order of the
-    # first sample and only fall back to a full scan when the key sets differ.
-    keys = list(payloads[0])
-    if any(len(pl) != len(keys) or pl.keys() != payloads[0].keys() for pl in payloads[1:]):
-        keys = list(dict.fromkeys(k for pl in payloads for k in pl))
+
+    # key -> the sample indices carrying it, in order.
+    where = {}
+    for i, pl in enumerate(payloads):
+        for k in pl:
+            where.setdefault(k, []).append(i)
+
     columns, rows = {}, {}
-    for k in keys:
-        try:
-            vals = [pl[k] for pl in payloads]
-        except KeyError:
-            rows[k] = [pl.get(k) for pl in payloads]
-            continue
+    for k, idx in where.items():
+        vals = [payloads[i][k] for i in idx]
+        where_i = None if len(idx) == n else idx
         v0 = vals[0]
         try:
             if isinstance(v0, np.ndarray):
                 if v0.dtype.kind not in 'fiub':
                     raise TypeError
-                col = np.asarray(vals, dtype='<f4')          # (n, *shape); raises on ragged
-                col = col.reshape(n, -1)
+                col = np.asarray(vals, dtype='<f8').reshape(len(vals), -1)
             elif isinstance(v0, (bool, int, float, np.generic)):
-                col = np.asarray(vals, dtype='<f4').reshape(n, 1)
+                col = np.asarray(vals, dtype='<f8').reshape(len(vals), 1)
             elif isinstance(v0, (list, tuple)) and v0:
-                col = np.asarray(vals, dtype='<f4').reshape(n, -1)   # raises on ragged/non-numeric
+                col = np.asarray(vals, dtype='<f8').reshape(len(vals), -1)
             else:
                 raise TypeError
         except (TypeError, ValueError):
-            rows[k] = vals
+            rows[k] = {'v': vals, 'i': where_i}
             continue
         if col.shape[1] == 0:
-            rows[k] = vals
+            rows[k] = {'v': vals, 'i': where_i}
             continue
-        columns[k] = {'d': int(col.shape[1]), 'f32': col.tobytes()}
+
+        # float32 halves the payload but carries only ~7 significant digits.
+        # A *relative* check is not enough to decide: a wall-clock stamp
+        # (1.79e9) has a float32 step of ~128 s, which is a relative error of
+        # 7e-8 yet destroys a column whose own spread is milliseconds. So
+        # compare the round-trip error against what the column actually
+        # varies by, and fall back to float64 when it does not resolve it.
+        col32 = col.astype('<f4')
+        finite = np.isfinite(col)
+        if finite.any():
+            err = float(np.abs(col32.astype('<f8') - col)[finite].max())
+            spread = float(np.ptp(col[finite]))
+            # Narrow only when the error is negligible against what the
+            # column varies by AND small in absolute terms -- the second half
+            # catches a large constant (a `t0` stamp is off by ~64 s in
+            # float32 while its relative error is a harmless 4e-8).
+            keep32 = err <= max(1e-4 * spread, 1e-6)
+        else:
+            keep32 = True
+        data, dtype = (col32, 'f4') if keep32 else (col, 'f8')
+        columns[k] = {'d': int(col.shape[1]), 'v': data.tobytes(),
+                      'dt': dtype, 'i': where_i}
+
     return {'type': 'sample_batch', 'session': session, 'n': n,
             'times': times.tobytes(), 'columns': columns, 'rows': rows}
 
 
 def expand_sample_batch(item):
-    """Inverse of pack_sample_batch: list of plain 'sample' items."""
+    """Inverse of pack_sample_batch: list of plain 'sample' items.
+
+    A key is written back only onto the samples that carried it, so an
+    expanded batch has exactly the payloads that went in.
+    """
     n = item['n']
     times = np.frombuffer(item['times'], dtype='<f8')
-    cols = {k: np.frombuffer(c['f32'], dtype='<f4').reshape(n, c['d'])
-            for k, c in item.get('columns', {}).items()}
-    rows = item.get('rows', {})
-    out = []
-    for i in range(n):
-        payload = {k: (float(c[i, 0]) if c.shape[1] == 1 else c[i].astype(np.float64))
-                   for k, c in cols.items()}
-        for k, r in rows.items():
-            payload[k] = r[i]
-        out.append({'type': 'sample', 'time': float(times[i]),
-                    'session': item.get('session'), 'payload': payload})
+    out = [{'type': 'sample', 'time': float(times[i]),
+            'session': item.get('session'), 'payload': {}} for i in range(n)]
+
+    for k, c in item.get('columns', {}).items():
+        d = c['d']
+        buf = c['v'] if 'v' in c else c['f32']          # 'f32': first version
+        arr = np.frombuffer(buf, dtype='<' + c.get('dt', 'f4')).reshape(-1, d)
+        idx = c.get('i')
+        idx = range(n) if idx is None else idx
+        for j, i in enumerate(idx):
+            out[i]['payload'][k] = (float(arr[j, 0]) if d == 1
+                                    else arr[j].astype(np.float64))
+
+    for k, rv in item.get('rows', {}).items():
+        if isinstance(rv, dict):
+            vals = rv['v']
+            idx = rv.get('i')
+            idx = range(n) if idx is None else idx
+            for j, i in enumerate(idx):
+                out[i]['payload'][k] = vals[j]
+        else:
+            # Recordings from the first version of this format stored a plain
+            # full-length list and filled missing entries with None. There is
+            # no way to tell those apart from a genuine None, so drop them --
+            # a key the producer never logged is better absent than null.
+            for i, v in enumerate(rv):
+                if v is not None:
+                    out[i]['payload'][k] = v
     return out
 
 

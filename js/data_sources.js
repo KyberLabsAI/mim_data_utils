@@ -74,23 +74,45 @@ function typedFromBin(u8, ctor) {
 }
 
 // Columnar batch of N samples (see pack_sample_batch in logger.py): one
-// float32 column per key instead of N dicts of float64 lists. Decoding cost
-// is per column, not per sample, and the values are recorded through the
-// same Traces API as single samples.
+// typed column per key instead of N dicts of float64 lists. Decoding cost is
+// per column, not per sample, and the values are recorded through the same
+// Traces API as single samples.
+//
+// A key does not have to appear in every sample of the batch -- the
+// controller state and the 3d scene are logged separately and land in one
+// bin. `i` then lists the sample indices the key covers (absent = all of
+// them), walked with a cursor so the whole batch stays linear.
 function parseSampleBatch(sd, data) {
     const n = data.n;
     if (!n) {
         return false;
     }
     const times = typedFromBin(data.times, Float64Array);
+
     const columns = [];
     for (const [key, col] of Object.entries(data.columns || {})) {
         if (key === 'time') {
             continue;
         }
-        columns.push({key: key, d: col.d, values: typedFromBin(col.f32, Float32Array)});
+        const ctor = col.dt === 'f8' ? Float64Array : Float32Array;
+        columns.push({
+            key: key, d: col.d, idx: col.i || null, cursor: 0,
+            values: typedFromBin(col.v !== undefined ? col.v : col.f32, ctor),
+        });
     }
-    const rows = Object.entries(data.rows || {}).filter(([key, _]) => key !== 'time');
+    const rows = [];
+    for (const [key, rv] of Object.entries(data.rows || {})) {
+        if (key === 'time') {
+            continue;
+        }
+        // Arrays are the first version of the format: full length, missing
+        // entries filled with null.
+        const isLegacy = Array.isArray(rv);
+        rows.push({
+            key: key, values: isLegacy ? rv : rv.v,
+            idx: isLegacy ? null : (rv.i || null), cursor: 0,
+        });
+    }
 
     let frozen = sd === currentSession ? isFrozen : sd.frozen;
     for (let i = 0; i < n; i++) {
@@ -99,12 +121,28 @@ function parseSampleBatch(sd, data) {
         }
         sd.traces.beginTimestep(times[i], wsMaxData);
         for (const c of columns) {
-            sd.traces.record(c.key, c.values.subarray(i * c.d, (i + 1) * c.d));
+            let j;
+            if (c.idx === null) {
+                j = i;
+            } else if (c.cursor < c.idx.length && c.idx[c.cursor] === i) {
+                j = c.cursor++;
+            } else {
+                continue;
+            }
+            sd.traces.record(c.key, c.values.subarray(j * c.d, (j + 1) * c.d));
         }
-        for (const [key, values] of rows) {
-            const value = normalizeSampleValue(values[i]);
+        for (const r of rows) {
+            let j;
+            if (r.idx === null) {
+                j = i;
+            } else if (r.cursor < r.idx.length && r.idx[r.cursor] === i) {
+                j = r.cursor++;
+            } else {
+                continue;
+            }
+            const value = normalizeSampleValue(r.values[j]);
             if (value !== null) {
-                sd.traces.record(key, value);
+                sd.traces.record(r.key, value);
             }
         }
         sd.traces.endTimestep();

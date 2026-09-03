@@ -521,16 +521,30 @@ def run():
             websocket.broadcast(data, priority='timeseries')
             return
         passthrough = []
+        seen_sessions = set()
         with bin_lock:
-            entry = bins.setdefault(session, [time.time(), []])
             for item in items:
                 if (isinstance(item, dict) and item.get('type') == 'sample'
                         and not isinstance(item.get('time'), str)):
+                    # Bin by the item's OWN session, never by the topic's.
+                    # Several Loggers can share one WebsocketWriter, and each
+                    # Logger's constructor calls set_session() on it -- so the
+                    # ZMQ topic reflects whichever Logger was built last and
+                    # says nothing about where a given sample belongs. Only
+                    # the per-item 'session' does (Logger._append_log stamps
+                    # it). Getting this wrong files every producer's traces
+                    # under the most recently created session.
+                    s_item = item.get('session') or session
+                    seen_sessions.add(s_item)
+                    entry = bins.setdefault(s_item, [time.time(), []])
                     if not entry[1]:
                         entry[0] = time.time()
                     entry[1].append(item)
                 else:
                     passthrough.append(item)
+        for s_item in seen_sessions:
+            if s_item != session:
+                session_tracker.touch(s_item)
         if passthrough:
             websocket.broadcast(ormsgpack.packb(passthrough), priority='timeseries')
         flush_bins()
