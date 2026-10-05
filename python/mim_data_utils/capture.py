@@ -7,7 +7,9 @@ Two sources, mirroring the old ``capture_frame.sh``:
   * websocket — the latest JPEG per camera on the mim data stream.
 
 ``recorder.py`` calls :func:`capture_frames` to store ``_begin`` / ``_end`` frames
-next to each ``.zst`` recording. Every heavy dependency (kyber_utils, opencv,
+next to each ``.zst`` recording. With ``average`` ('mean' or 'median') every new
+frame of the next ``duration`` seconds is combined per pixel into one noise-reduced
+image (static scene; ``record.sh --snapshot 1s --average``). Every heavy dependency (kyber_utils, opencv,
 ormsgpack, websocket) is imported lazily so the recorder's plain ``.zst`` recording
 still works if any of them is missing — capture just logs a warning and is skipped.
 """
@@ -31,8 +33,65 @@ def _safe(name):
     return ''.join(c if c.isalnum() or c in '-_.' else '_' for c in str(name))
 
 
-def capture_shm(prefix, out_dir):
-    """Snapshot every ``/dev/shm/kyb_*`` segment (color + depth). Returns saved paths."""
+def combine_frames(frames, method='mean', depth=False):
+    """Per-pixel combination of frames of a static scene: 'mean' (noise / sqrt(N)) or
+    'median' (robust to outliers). Depth: median of the valid (non-zero) samples."""
+    import numpy as np
+    stack = np.stack(frames)
+    if depth:
+        import warnings
+        valid = np.where(stack > 0, stack.astype(np.float32), np.nan)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN pixels -> 0 below
+            med = np.nanmedian(valid, axis=0)
+        return np.nan_to_num(med, nan=0).round().astype(stack.dtype)
+    if method == 'median':
+        return np.median(stack, axis=0).round().astype(stack.dtype)
+    return (stack.astype(np.float32).mean(axis=0) + 0.5).astype(stack.dtype)
+
+
+def _read_shm_frames(names, duration):
+    """Read every new frame (by frame_counter) of the given segments for `duration` s.
+    Returns {name: (frames, last_meta)}."""
+    from kyber_utils.shared_image_buffer import SharedImageReader
+    readers = {}
+    for name in names:
+        reader = SharedImageReader('')
+        reader.shm_name = name
+        readers[name] = reader
+    out = {name: ([], None, None) for name in names}   # frames, meta, last counter
+    deadline = time.monotonic() + duration
+    try:
+        while True:
+            for name, reader in readers.items():
+                try:
+                    res = reader.read()
+                except Exception:
+                    res = None
+                if res is None:
+                    continue
+                frame, meta = res
+                frames, _, last = out[name]
+                if meta.get('frame_counter') == last:
+                    continue
+                frames.append(frame.copy())
+                out[name] = (frames, meta, meta.get('frame_counter'))
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.003)
+    finally:
+        for reader in readers.values():
+            try:
+                reader._detach()
+            except Exception:
+                pass
+    return {name: (frames, meta) for name, (frames, meta, _) in out.items()}
+
+
+def capture_shm(prefix, out_dir, average=None, duration=0.0):
+    """Snapshot every ``/dev/shm/kyb_*`` segment (color + depth). With `average`,
+    combine all new frames of the next `duration` s (see combine_frames). Returns
+    saved paths."""
     saved = []
     try:
         import cv2
@@ -42,27 +101,44 @@ def capture_shm(prefix, out_dir):
         print(f'[capture] shm capture unavailable ({e})')
         return saved
 
-    for shm_path in sorted(glob.glob('/dev/shm/kyb_*')):
-        name = os.path.basename(shm_path)
+    names = [os.path.basename(p) for p in sorted(glob.glob('/dev/shm/kyb_*'))]
+    averaged = {}
+    if average and names:
         try:
-            # SharedImageReader is keyed by topic, but only uses .shm_name to
-            # attach; point it directly at the discovered segment.
-            reader = SharedImageReader('')
-            reader.shm_name = name
-            res = reader.read()
-            reader._detach()
+            averaged = _read_shm_frames(names, duration)
         except Exception as e:
-            print(f'[capture] {name}: read failed ({e})')
-            continue
-        if res is None:
-            print(f'[capture] {name}: no fresh frame')
-            continue
+            print(f'[capture] averaging read failed ({e}); falling back to single frames')
 
-        frame, meta = res
+    for name in names:
+        if name in averaged and averaged[name][0]:
+            frames, meta = averaged[name]
+            res = (frames, meta)
+        else:
+            try:
+                # SharedImageReader is keyed by topic, but only uses .shm_name to
+                # attach; point it directly at the discovered segment.
+                reader = SharedImageReader('')
+                reader.shm_name = name
+                res = reader.read()
+                reader._detach()
+            except Exception as e:
+                print(f'[capture] {name}: read failed ({e})')
+                continue
+            if res is None:
+                print(f'[capture] {name}: no fresh frame')
+                continue
+            res = ([res[0]], res[1])
+
+        frames, meta = res
         cam = _camera_name_from_calib(meta.get('calibration_path', ''), name)
         enc = meta.get('encoding', '')
         is_depth = (enc in ('depth16', 'mono16', '16uc1')
-                    or getattr(frame, 'dtype', None) == np.uint16)
+                    or getattr(frames[0], 'dtype', None) == np.uint16)
+        frame = (combine_frames(frames, average, depth=is_depth) if len(frames) > 1
+                 else frames[0])
+        note = f' ({average} of {len(frames)} frames)' if len(frames) > 1 else ''
+        if average and len(frames) == 1:
+            note = ' (only 1 frame arrived -- not averaged)'
         if is_depth:
             out = os.path.join(out_dir, f'{prefix}_{cam}_depth.png')   # 16-bit PNG
             img = frame
@@ -73,7 +149,7 @@ def capture_shm(prefix, out_dir):
         try:
             if cv2.imwrite(out, img):
                 saved.append(out)
-                print(f'[capture] {out}')
+                print(f'[capture] {out}{note}')
             else:
                 print(f'[capture] failed to write {out}')
         except Exception as e:
@@ -81,8 +157,10 @@ def capture_shm(prefix, out_dir):
     return saved
 
 
-def capture_ws(prefix, out_dir, host, port, duration=0.2):
-    """Snapshot the latest JPEG per camera from the mim websocket. Returns saved paths."""
+def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None):
+    """Snapshot the latest JPEG per camera from the mim websocket. With `average`,
+    decode every JPEG of the `duration` window and combine them per camera into a
+    lossless PNG (see combine_frames). Returns saved paths."""
     saved = []
     try:
         import ormsgpack
@@ -98,6 +176,7 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2):
         return saved
 
     seen = set()
+    collected = {}   # average: camera -> [jpeg payloads]
     deadline = time.monotonic() + duration
     try:
         while True:
@@ -129,6 +208,9 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2):
                 if isinstance(iname, bytes):
                     iname = iname.decode('utf-8', 'replace')
                 safe = _safe(iname)
+                if average:
+                    collected.setdefault(safe, []).append(bytes(payload))
+                    continue
                 if safe in seen:
                     continue
                 out = os.path.join(out_dir, f'{prefix}_{safe}.jpg')
@@ -145,15 +227,57 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2):
             ws.close()
         except Exception:
             pass
+
+    for safe, payloads in collected.items():
+        try:
+            import cv2
+            import numpy as np
+            frames = [cv2.imdecode(np.frombuffer(p, np.uint8), cv2.IMREAD_UNCHANGED) for p in payloads]
+            frames = [f for f in frames if f is not None]
+            shapes = {f.shape for f in frames}
+            if not frames or len(shapes) != 1:
+                print(f'[capture] {safe}: no consistent frames to average')
+                continue
+            out = os.path.join(out_dir, f'{prefix}_{safe}.png')
+            if cv2.imwrite(out, combine_frames(frames, average)):
+                saved.append(out)
+                print(f'[capture] {out} ({average} of {len(frames)} frames)')
+        except Exception as e:
+            print(f'[capture] {safe}: averaging failed ({e})')
     return saved
 
 
-def capture_frames(prefix, out_dir, host='127.0.0.1', port=5678, ws_duration=0.2):
+def capture_frames(prefix, out_dir, host='127.0.0.1', port=5678, ws_duration=0.2,
+                   average=None, duration=None):
     """Snapshot both shared-memory (color+depth) and websocket-JPEG images.
 
+    With `average` ('mean' / 'median'), both sources are read in parallel for
+    `duration` seconds and every new frame is combined into one image per camera.
     Never raises; returns the list of saved file paths."""
     os.makedirs(out_dir, exist_ok=True)
     saved = []
+    if average:
+        import threading
+        results = {}
+
+        def run(key, fn, *a):
+            try:
+                results[key] = fn(*a)
+            except Exception as e:
+                print(f'[capture] {key} capture error: {e}')
+                results[key] = []
+
+        threads = [threading.Thread(target=run, args=('shm', capture_shm, prefix, out_dir, average, duration)),
+                   threading.Thread(target=run, args=('websocket', capture_ws, prefix, out_dir, host, port,
+                                                      duration, average))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        saved = results.get('shm', []) + results.get('websocket', [])
+        if not saved:
+            print('[capture] no images captured.')
+        return saved
     try:
         saved += capture_shm(prefix, out_dir)
     except Exception as e:

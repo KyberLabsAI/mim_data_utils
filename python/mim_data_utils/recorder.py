@@ -148,6 +148,24 @@ def parse_encode_keyframe(token):
     return k
 
 
+def parse_duration(token):
+    """Parse a duration for ``--snapshot``: a bare number of seconds (``0.1``,
+    ``2``), or with a unit (``0.5s``, ``100ms``). Returns seconds."""
+    t = str(token).strip().lower()
+    scale = 1.0
+    if t.endswith('ms'):
+        t, scale = t[:-2], 1e-3
+    elif t.endswith('s'):
+        t = t[:-1]
+    try:
+        v = float(t) * scale
+    except ValueError as e:
+        raise ValueError(f'invalid duration {token!r} (expected e.g. 0.1, 2, 0.5s or 100ms)') from e
+    if v <= 0:
+        raise ValueError(f'duration must be positive, got {token!r}')
+    return v
+
+
 def parse_encode_video_args(tokens):
     """Parse optional ``--with-encode-video`` tokens into
     ``(size, fps_limit, cq, denoise, keyframe_s)``.
@@ -631,9 +649,11 @@ class Recorder:
             self._ws_thread.join(timeout=3)
             self._ws_thread = None
 
-    def _capture_frames(self, suffix):
+    def _capture_frames(self, suffix, average=None, duration=None):
         """Snapshot current camera images (shm color+depth + websocket JPEGs) next
-        to the recording, prefixed like the .zst with `suffix` (e.g. '_begin')."""
+        to the recording, prefixed like the .zst with `suffix` (e.g. '_begin').
+        With `average` ('mean' / 'median'), combine every frame of the next
+        `duration` s into one noise-reduced image per camera."""
         try:
             try:
                 from . import capture  # package import
@@ -641,12 +661,15 @@ class Recorder:
                 import capture          # run-as-script (recorder.py's dir on sys.path)
             p = Path(self.path)
             capture.capture_frames(prefix=p.stem + suffix, out_dir=str(p.parent),
-                                   host=self._host, port=self._port)
+                                   host=self._host, port=self._port,
+                                   average=average, duration=duration)
         except Exception as e:
             print(f'[recorder] frame capture ({suffix}) failed: {e}')
 
-    def start_recording(self):
-        """Start writing received messages to disk, and snapshot _begin frames."""
+    def start_recording(self, average=None, average_s=None):
+        """Start writing received messages to disk, and snapshot _begin frames.
+        With `average`, the _begin frames combine all frames of the next
+        `average_s` seconds (blocks that long while data keeps recording)."""
         if self._recording:
             return
 
@@ -670,7 +693,7 @@ class Recorder:
             opt_note = f" ({', '.join(opts)})" if opts else ''
             print(f'[recorder] Encoding H.265 video per camera{opt_note} to '
                   f'{stem}_<camera>.mp4 (opened when each stream starts)')
-        self._capture_frames('_begin')
+        self._capture_frames('_begin', average, average_s)
 
     def stop_recording(self, capture_end=True):
         """Stop writing and finalise the file; snapshot _end frames unless
@@ -732,7 +755,29 @@ def main():
     parser.add_argument('--without-timeseries', action='store_true', default=False,
                         help='Do not log timeseries (sample/depth) data to the '
                              'recording (logged by default)')
+    parser.add_argument('--snapshot', nargs='?', const='1s', default=None,
+                        metavar='DURATION',
+                        help='SPACE records a snapshot instead of toggling a full '
+                             'recording: current frames (_begin) + DURATION of data, '
+                             'then stops (no _end frames). DURATION in seconds '
+                             '(0.1, 2) or with a unit (0.5s, 100ms); default 1')
+    parser.add_argument('--average', nargs='?', const='mean', default=None,
+                        choices=('mean', 'median'),
+                        help='with --snapshot: the _begin image combines every camera '
+                             'frame of the snapshot duration into one noise-reduced image '
+                             '(static scene): mean (default, noise / sqrt(N)) or median '
+                             '(robust to outliers). Depth: median of valid samples. '
+                             'E.g. --snapshot --average')
     args = parser.parse_args()
+    if args.average and args.snapshot is None:
+        parser.error('--average needs --snapshot (the snapshot duration is the averaging window)')
+
+    snapshot_s = None
+    if args.snapshot is not None:
+        try:
+            snapshot_s = parse_duration(args.snapshot)
+        except ValueError as e:
+            parser.error(str(e))
 
     encode_video = args.with_encode_video is not None
     encode_size, encode_fps, encode_cq, encode_denoise, encode_kf = None, None, None, None, None
@@ -768,10 +813,30 @@ def main():
     rec.connect()
 
     print()
-    print('  [SPACE]  Start/stop a full recording (stores _begin/_end frames)')
+    if snapshot_s is not None and args.average:
+        print(f'  [SPACE]  Snapshot: {args.average} of all frames + data over '
+              f'{snapshot_s * 1e3:g} ms (no _end frames)')
+    elif snapshot_s is not None:
+        print(f'  [SPACE]  Snapshot: current frames + {snapshot_s * 1e3:g} ms of data '
+              f'(no _end frames)')
+    else:
+        print('  [SPACE]  Start/stop a full recording (stores _begin/_end frames)')
     print('  [c]      Capture current frames + 100 ms of data (no _end frames)')
     print('  [Ctrl+C] Exit')
     print()
+
+    def snapshot(duration_s, average=None):
+        # Current frames (_begin) + `duration_s` of data, then stop without
+        # _end frames. Each snapshot gets its own timestamped file. With
+        # `average` the _begin capture itself spans `duration_s` (combining
+        # all frames) while the data records in parallel.
+        rec.path = _fill_template(template)
+        if average:
+            rec.start_recording(average=average, average_s=duration_s)
+        else:
+            rec.start_recording()
+            time.sleep(duration_s)
+        rec.stop_recording(capture_end=False)
 
     # cbreak (not raw) terminal mode: char-by-char keypresses without echo,
     # but output post-processing stays on so '\n' still maps to '\r\n' and
@@ -787,7 +852,11 @@ def main():
             if select.select([sys.stdin], [], [], 0.1)[0]:
                 ch = sys.stdin.read(1)
 
-                if ch == ' ':
+                if ch == ' ' and snapshot_s is not None:
+                    snapshot(snapshot_s, args.average)
+                    print(f'  Captured frames + {snapshot_s * 1e3:g} ms. Press [SPACE] for the next.')
+
+                elif ch == ' ':
                     if rec.is_recording:
                         rec.stop_recording()
                         print('  Stopped. Press [SPACE] to start a new recording.')
@@ -800,12 +869,7 @@ def main():
                         rec.start_recording()
 
                 elif ch in ('c', 'C') and not rec.is_recording:
-                    # Quick capture: current frames (_begin) + ~100 ms of data,
-                    # then stop without _end frames.
-                    rec.path = _fill_template(template)
-                    rec.start_recording()
-                    time.sleep(0.1)
-                    rec.stop_recording(capture_end=False)
+                    snapshot(0.1)
                     print('  Captured frames + 100 ms. Press [SPACE] or [c].')
 
                 elif ch == '\x03':  # Ctrl+C (fallback if ISIG is disabled)
