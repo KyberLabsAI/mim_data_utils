@@ -121,6 +121,19 @@ body.layout-panel-open .panel-root {
     object-fit: contain;
 }
 
+/* Fill mode 'width' (Set Layout -> Visuals -> Fill): each image takes the
+   panel's full width at its own aspect ratio and the panel scrolls vertically,
+   instead of all images sharing (and being fitted into) the panel's height. */
+.cameras-container.fill-width .camera-panel {
+    flex: none;
+}
+
+.cameras-container.fill-width .camera-panel img,
+.cameras-container.fill-width .camera-panel canvas,
+.cameras-container.fill-width .camera-panel video {
+    height: auto;
+}
+
 .camera-label {
     position: absolute;
     top: 4px;

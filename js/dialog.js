@@ -149,6 +149,19 @@ const _dialogCSS = `
 .custom-dialog .toggle-row input[type=checkbox] {
     margin: 0;
 }
+.custom-dialog .fill-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    margin-bottom: 6px;
+}
+.custom-dialog .fill-row label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
 .custom-dialog .toggle-empty {
     font-size: 12px;
     color: #888;

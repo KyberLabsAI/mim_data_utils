@@ -40,6 +40,9 @@ let disabledImageSources = new Set(currentSession.settings.disabledImageSources 
 let disabledPointClouds = new Set(currentSession.settings.disabledPointClouds || []);
 // All non-point-cloud 3D objects (meshes, plane, ...) collapse to one toggle.
 let sceneObjectsHidden = !!currentSession.settings.sceneObjectsHidden;
+// 'height': every image fits in the img panel's height (they share it).
+// 'width': every image is as wide as the panel; the panel scrolls vertically.
+let imageFill = currentSession.settings.imageFill || 'height';
 
 // A scene entry is a streamed point cloud iff it exposes addFrame() (PointCloud3D).
 function isPointCloudEntry(entry) {
@@ -50,6 +53,10 @@ function applyImageVisibility() {
     cameras.forEach(cam => {
         cam.container.style.display = disabledImageSources.has(cam.name) ? 'none' : '';
     });
+}
+
+function applyImageFill() {
+    camerasContainer.classList.toggle('fill-width', imageFill === 'width');
 }
 
 function applySceneVisibility() {
@@ -69,6 +76,7 @@ function persistVisibility() {
     currentSession.settings.disabledImageSources = [...disabledImageSources];
     currentSession.settings.disabledPointClouds = [...disabledPointClouds];
     currentSession.settings.sceneObjectsHidden = sceneObjectsHidden;
+    currentSession.settings.imageFill = imageFill;
     persistSessionSettings(currentSession);
 }
 
@@ -463,12 +471,34 @@ function openLayoutWindow(focusTraces = false) {
     tracesSection.appendChild(tracesRow);
     dialog.appendChild(tracesSection);
 
-    // --- Visuals section: one checkbox per image source ---
+    // --- Visuals section: fill mode, then one checkbox per image source ---
     const visualsSection = document.createElement('div');
     visualsSection.className = 'toggle-section';
     const visualsHeader = document.createElement('h4');
     visualsHeader.textContent = 'Visuals';
     visualsSection.appendChild(visualsHeader);
+
+    const fillRow = document.createElement('div');
+    fillRow.className = 'fill-row';
+    fillRow.appendChild(document.createTextNode('Fill:'));
+    ['height', 'width'].forEach(mode => {
+        const label = document.createElement('label');
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = 'imageFill';
+        radio.value = mode;
+        radio.checked = imageFill === mode;
+        radio.addEventListener('change', () => {
+            if (!radio.checked) return;
+            imageFill = mode;
+            applyImageFill();
+            persistVisibility();
+        });
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(' ' + mode));
+        fillRow.appendChild(label);
+    });
+    visualsSection.appendChild(fillRow);
     const visualsList = document.createElement('div');
     visualsList.className = 'toggle-list';
     visualsSection.appendChild(visualsList);
@@ -1048,6 +1078,7 @@ window.addEventListener('beforeunload', () => {
 
 // Apply any saved per-source display filters once the scene/cameras exist.
 applyImageVisibility();
+applyImageFill();
 applySceneVisibility();
 
 firstNewData();

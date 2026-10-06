@@ -19,6 +19,9 @@ const BUILTIN_SESSION_SETTINGS = {
     disabledImageSources: [],
     disabledPointClouds: [],
     sceneObjectsHidden: false,
+    // How images fill the img panel: 'height' (all fit the panel height) or
+    // 'width' (each as wide as the panel, scroll vertically).
+    imageFill: 'height',
     // null = leave the 3d viewers as they are; else [{position, lookAt}, ...]
     cameras3d: null,
 };
@@ -209,6 +212,7 @@ function switchSession(name) {
     disabledImageSources = new Set(s.disabledImageSources || []);
     disabledPointClouds = new Set(s.disabledPointClouds || []);
     sceneObjectsHidden = !!s.sceneObjectsHidden;
+    imageFill = s.imageFill || BUILTIN_SESSION_SETTINGS.imageFill;
     try {
         applyPanelLayout(s.panelLayout || BUILTIN_SESSION_SETTINGS.panelLayout, false);
     } catch (err) {
@@ -218,6 +222,7 @@ function switchSession(name) {
     rebuildSceneForSession(target);
     restoreSceneCameras(s.cameras3d);
     applyImageVisibility();
+    applyImageFill();
 
     updateSignals();
     updateLayout();
