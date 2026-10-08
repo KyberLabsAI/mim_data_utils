@@ -140,9 +140,18 @@ class Plot {
     draw(time, xlim, refreshPlots, axesOnly, marks) {
         let verticalLines = [new VerticalLine(time, 'orange')];
         let legendLines = [new VerticalLine(time, 'orange')];
+        // A label logged several times (e.g. 'R' per recorded pose) gets one
+        // table column: its latest marker. All markers are still drawn.
+        let latest = new Map();
+        marks.getMarks().forEach(mark => {
+            let prev = latest.get(mark.label);
+            if (!prev || mark.time >= prev.time) {
+                latest.set(mark.label, mark);
+            }
+        });
         marks.withinXLim(xlim).forEach(mark => {
             verticalLines.push(new VerticalLine(mark.time, 'red', mark.label));
-            if (mark.showSummary) {
+            if (mark.showSummary && latest.get(mark.label) === mark) {
                 legendLines.push(new VerticalLine(mark.time, 'red', mark.label));
             }
         });

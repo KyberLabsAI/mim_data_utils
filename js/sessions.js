@@ -15,7 +15,7 @@ const SESSION_SETTINGS_PREFIX = 'mdu:session:';
 
 const BUILTIN_SESSION_SETTINGS = {
     plotLayout: 'trig[0],trig[1];trig[:2]',
-    panelLayout: 't|3d/img',
+    panelLayout: 't|3d/img',  // panels: t, 3d, img, m
     disabledImageSources: [],
     disabledPointClouds: [],
     sceneObjectsHidden: false,
@@ -86,6 +86,7 @@ class SessionData {
         this.zoomX = null;
         this.settings = loadSessionSettings(name);
         this.marks = new Marks();
+        this.mdLog = new MarkdownLog();      // Logger.log_md messages
         this.cameras = new Map();   // name -> CameraPlayback
         this.traces = new Traces(
             wsMaxData, (type, evt, payload) => this._onTracesEvent(type, evt, payload));
@@ -106,6 +107,7 @@ class SessionData {
         this.cameras.forEach(cam => cam.remove());
         this.cameras.clear();
         this.marks.clearMarks();
+        this.mdLog.clear();
         this.hasData = false;
         this.frozen = false;
         this.zoomX = null;

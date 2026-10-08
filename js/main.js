@@ -103,7 +103,9 @@ const panelNodes = {
     t: domPlots,
     '3d': document.getElementById('viewer'),
     img: camerasContainer,
+    m: document.getElementById('mdPanel'),
 };
+const mdPanel = new MarkdownPanel(panelNodes.m);
 
 
 function arrEqual(a, b) {
@@ -249,13 +251,13 @@ function collectPanelIds(ast, out = []) {
 }
 
 function validatePanelLayoutAst(ast) {
-    let valid = new Set(['t', '3d', 'img']);
+    let valid = new Set(['t', '3d', 'img', 'm']);
     let seen = new Set();
     let ids = collectPanelIds(ast);
 
     ids.forEach(id => {
         if (!valid.has(id)) {
-            throw new Error(`Unknown panel '${id}'. Valid: t, 3d, img`);
+            throw new Error(`Unknown panel '${id}'. Valid: t, 3d, img, m`);
         }
         if (seen.has(id)) {
             throw new Error(`Panel '${id}' is duplicated`);
@@ -324,10 +326,10 @@ function applyPanelLayout(layoutText, persist = true) {
 }
 
 const PANEL_LAYOUT_LEGEND = [
-    'Panels: t (plots), 3d (viewer), img (images)',
+    'Panels: t (plots), 3d (viewer), img (images), m (markdown messages)',
     'Operators: "|" horizontal, "/" vertical',
     'Grouping: ( )',
-    'Examples: t|3d/img   t|(3d/img)   (t|img)/3d',
+    'Examples: t|3d/img   t|(3d/img)   (t|img)/3d   (t/m)|img',
 ].join('\n');
 
 // Strip the internal '3d/' prefix that Scene.to_static_dict adds, for display.
@@ -948,6 +950,26 @@ function isPlotDisplayed() {
 
 
 var isFrozen = false;
+// Move the time cursor to `t` like a click in the plots does (freeze the live
+// view, then set the scene time); the draw loop then updates the plots, images,
+// 3d scene and the markdown panel from it. If `t` is outside the visible window,
+// the window is re-centred on it (same width).
+function mdGotoTime(t) {
+    if (plots.length) {
+        freeze(true);
+        const xlim = getXLim();
+        if (t < xlim[0] || t > xlim[1]) {
+            const w = xlim[1] - xlim[0];
+            layout.zoomX = [t - w / 2, t + w / 2];
+        }
+        updatePlotViewport();
+    } else {
+        isFrozen = true;
+    }
+    scene.setTime(t);
+    forcePlotRefresh = true;
+}
+
 function freeze(newValue) {
     if (newValue !== undefined) {
         isFrozen = !newValue; // Negate as will be negated once more below.
@@ -1011,6 +1033,12 @@ let draw = () => {
             if (disabledImageSources.has(cam.name)) return;
             cam.syncToTime(absTime);
         });
+    }
+
+    if (panelVisible.has('m')) {
+        // Live (no cursor): the newest message; else the last one at the cursor.
+        mdPanel.syncToTime(currentSession.mdLog, scene.time == null ? null : scene.absoluteTime(),
+                           currentSession.marks);
     }
 }
 

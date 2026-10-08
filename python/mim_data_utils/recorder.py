@@ -1,12 +1,16 @@
 """
-WebSocket recorder for mim_data_utils.
+Recordings for mim_data_utils.
 
-Connects to the mim_data_utils websocket server as a client (like the
-browser frontend) and writes all received messages to a zstandard-compressed
-file.  The file format is identical to FileLoggerWriter so recordings can be
-read back with FileLoggerReader.
+The recordings run inside the server process (server.py, started by
+serve.sh): `RecordingManager` gets every message the server sends to its
+viewers and writes it to zstandard-compressed files (same format as
+FileLoggerWriter, readable with FileLoggerReader). Producers start and stop
+recordings over a small RPC (Logger.record / Logger.stop_recording); the
+`main()` here (record.sh) is just a Logger plus keyboard handling.
 """
 
+import collections
+import os
 import struct
 import subprocess
 import threading
@@ -16,7 +20,6 @@ from pathlib import Path
 
 import ormsgpack
 import zstandard
-import websocket
 
 _VIDEO_TYPES = {b'image', b'video_segment', 'image', 'video_segment'}
 _TIMESERIES_TYPES = {b'sample', b'depth', 'sample', 'depth', b'sample_batch', 'sample_batch'}
@@ -217,13 +220,14 @@ def _safe_name(name):
     return ''.join(c if (c.isalnum() or c in '-_.') else '_' for c in str(name))
 
 
-def _fill_template(template):
+def _fill_template(template, reserved=()):
     """Fill a recording-path template for a new section.
 
     A ``{timestamp}`` placeholder in ``template`` is replaced with the current
     ``YYYYmmdd_HHMMSS``; if the template has no placeholder the timestamp is
     appended before the extension instead. A numeric suffix is added if the
-    resulting file already exists, so sections never overwrite each other.
+    resulting file already exists (or is in `reserved`: a name handed out
+    whose file is not created yet), so recordings never overwrite each other.
     """
     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
     if '{timestamp}' in template:
@@ -234,10 +238,19 @@ def _fill_template(template):
     p = Path(filled)
     candidate = p
     n = 2
-    while candidate.exists():
+    while candidate.exists() or str(candidate) in reserved:
         candidate = p.with_name(f'{p.stem}_{n}{p.suffix}')
         n += 1
     return str(candidate)
+
+
+def _all_cpus():
+    """ffmpeg child: undo the server's CPU pinning (serve.sh runs it with
+    taskset on one core, which children would inherit)."""
+    try:
+        os.sched_setaffinity(0, range(os.cpu_count() or 1))
+    except (AttributeError, OSError):
+        pass
 
 
 class _CameraEncoder:
@@ -364,7 +377,8 @@ class _CameraEncoder:
             # written straight through (one syscall per frame, no extra latency
             # for live viewers), while many tiny writes still get coalesced.
             self.proc = subprocess.Popen(
-                cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                preexec_fn=_all_cpus)
         except OSError as e:
             print(f'[recorder] Failed to start ffmpeg for {self.name}: {e}')
             self.failed = True
@@ -452,22 +466,22 @@ class _CameraEncoder:
 
 
 class Recorder:
-    """Records live websocket data to a zstandard-compressed file.
+    """Writes a stream of viewer messages (raw msgpack bytes, as the server
+    sends them to its websocket clients) to a zstandard-compressed file.
 
-    The websocket connection is maintained for the lifetime of the object.
-    Recording (writing to disk) can be started and stopped independently via
-    :meth:`start_recording` / :meth:`stop_recording`.
-
-    The output file is readable with ``FileLoggerReader``.
+    The server feeds it from its broadcast path (see ``RecordingManager``);
+    nothing here connects anywhere. The output file is readable with
+    ``FileLoggerReader``. ``files`` lists every file the recording created
+    (``.zst``, per-camera ``.mp4``, ``_begin`` / ``_end`` images).
     """
 
-    def __init__(self, path, max_file_size_mb, host='127.0.0.1', port=5678,
-                 compression_level=10, embed_video=False, encode_video=False,
-                 with_timeseries=True, encode_size=None, encode_fps=None,
-                 encode_cq=None, encode_denoise=None, encode_keyframe_s=None):
+    def __init__(self, path, max_file_size_mb, compression_level=10,
+                 embed_video=False, encode_video=False, with_timeseries=True,
+                 encode_size=None, encode_fps=None, encode_cq=None,
+                 encode_denoise=None, encode_keyframe_s=None,
+                 host='127.0.0.1', port=5678, async_write=False):
         self.path = str(path)
-        self.url = f'ws://{host}:{port}/'
-        self._host = host
+        self._host = host           # websocket the _begin/_end frame capture reads from
         self._port = port
         self.compression_level = compression_level
         self.max_file_size_mb = max_file_size_mb
@@ -480,29 +494,59 @@ class Recorder:
         self.encode_keyframe_s = encode_keyframe_s  # seconds or None (default 2 s)
         self.with_timeseries = with_timeseries
 
-        self._ws = None
-        self._ws_thread = None
         self._lock = threading.Lock()
         self._fh = None
         self._compressor = None
-        self._connected = False
         self._recording = False
         self._bytes_written = 0
         self._messages_written = 0
+        self.files = []
 
         self._enc_lock = threading.Lock()
         self._encoders = {}  # camera name -> _CameraEncoder
 
+        # async_write: feed() only queues; a writer thread compresses and
+        # writes, so the caller (the server's broadcast threads) never waits
+        # on zstd.
+        self.async_write = async_write
+        self._queue = collections.deque()
+        self._queue_event = threading.Event()
+        self._writer = None
+        self._writer_stop = False
+
     # -- file handling --------------------------------------------------------
 
     def _open_file(self):
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, 'wb')
+        self.files.append(self.path)
         cctx = zstandard.ZstdCompressor(level=self.compression_level)
         self._compressor = cctx.stream_writer(self._fh)
         self._bytes_written = 0
         self._messages_written = 0
+        if self.async_write:
+            self._writer_stop = False
+            self._writer = threading.Thread(target=self._writer_run, daemon=True,
+                                            name=f'recorder-writer-{Path(self.path).stem}')
+            self._writer.start()
+
+    def _writer_run(self):
+        while True:
+            self._queue_event.wait(0.1)
+            self._queue_event.clear()
+            while self._queue:
+                self._write_now(self._queue.popleft())
+            if self._writer_stop and not self._queue:
+                return
 
     def _write(self, data: bytes):
+        if self.async_write:
+            self._queue.append(data)
+            self._queue_event.set()
+        else:
+            self._write_now(data)
+
+    def _write_now(self, data: bytes):
         """Write one websocket message (raw msgpack bytes) to the file."""
         header = struct.pack('>I', len(data))
         with self._lock:
@@ -522,6 +566,11 @@ class Recorder:
                     self._recording = False
 
     def _close_file(self):
+        if self._writer is not None:
+            self._writer_stop = True
+            self._queue_event.set()
+            self._writer.join()
+            self._writer = None
         with self._lock:
             if self._compressor is not None:
                 self._compressor.flush(zstandard.FLUSH_FRAME)
@@ -540,7 +589,7 @@ class Recorder:
         for enc in encoders:
             enc.close()
 
-    # -- websocket callbacks --------------------------------------------------
+    # -- the stream -----------------------------------------------------------
 
     def _keep(self, item):
         """Whether an item should be written to the .zst, given the flags."""
@@ -553,8 +602,9 @@ class Recorder:
             return False
         return True
 
-    def _on_message(self, ws, message):
-        if not self._recording or not isinstance(message, bytes):
+    def feed(self, message):
+        """One viewer message (msgpack bytes of a list of items)."""
+        if not self._recording or not isinstance(message, (bytes, bytearray)):
             return
 
         # Nothing to filter and nothing to encode -> write raw bytes, no unpack.
@@ -602,52 +652,10 @@ class Recorder:
                     cq=self.encode_cq, denoise=self.encode_denoise,
                     keyframe_s=self.encode_keyframe_s)
                 self._encoders[name] = enc
+                self.files.append(out_path)
             enc.feed(jpeg, t)
 
-    def _on_error(self, ws, error):
-        print(f'[recorder] WebSocket error: {error}')
-
-    def _on_close(self, ws, close_status_code, close_msg):
-        print('[recorder] WebSocket disconnected')
-
-    def _on_open(self, ws):
-        print(f'[recorder] Connected to {self.url}')
-
     # -- public API -----------------------------------------------------------
-
-    def connect(self):
-        """Connect to the websocket server."""
-        if self._connected:
-            return
-
-        self._connected = True
-
-        self._ws = websocket.WebSocketApp(
-            self.url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-        )
-
-        self._ws_thread = threading.Thread(target=self._ws_run, daemon=True)
-        self._ws_thread.start()
-
-    def _ws_run(self):
-        while self._connected:
-            self._ws.run_forever()
-            if self._connected:
-                print('[recorder] Disconnected, reconnecting in 1s...')
-                time.sleep(1)
-
-    def disconnect(self):
-        """Disconnect from the websocket server."""
-        self._connected = False
-        if self._ws:
-            self._ws.close()
-        if self._ws_thread:
-            self._ws_thread.join(timeout=3)
-            self._ws_thread = None
 
     def _capture_frames(self, suffix, average=None, duration=None):
         """Snapshot current camera images (shm color+depth + websocket JPEGs) next
@@ -660,22 +668,24 @@ class Recorder:
             except ImportError:
                 import capture          # run-as-script (recorder.py's dir on sys.path)
             p = Path(self.path)
-            capture.capture_frames(prefix=p.stem + suffix, out_dir=str(p.parent),
-                                   host=self._host, port=self._port,
-                                   average=average, duration=duration)
+            saved = capture.capture_frames(prefix=p.stem + suffix, out_dir=str(p.parent),
+                                           host=self._host, port=self._port,
+                                           average=average, duration=duration)
+            self.files.extend(saved or [])
         except Exception as e:
             print(f'[recorder] frame capture ({suffix}) failed: {e}')
 
-    def start_recording(self, average=None, average_s=None):
-        """Start writing received messages to disk, and snapshot _begin frames.
-        With `average`, the _begin frames combine all frames of the next
-        `average_s` seconds (blocks that long while data keeps recording)."""
+    def open(self, header=()):
+        """Open the file, write `header` messages (what a newly connecting viewer
+        gets: session list + registered setups) and start taking the stream."""
         if self._recording:
             return
-
         with self._enc_lock:
             self._encoders = {}
         self._open_file()
+        for msg in header:
+            if msg is not None:
+                self._write(msg)
         self._recording = True
         print(f'[recorder] Recording to {self.path}')
         if self.encode_video:
@@ -693,15 +703,22 @@ class Recorder:
             opt_note = f" ({', '.join(opts)})" if opts else ''
             print(f'[recorder] Encoding H.265 video per camera{opt_note} to '
                   f'{stem}_<camera>.mp4 (opened when each stream starts)')
+
+    def capture_begin(self, average=None, average_s=None):
+        """The _begin frames. With `average`, they combine all frames of the next
+        `average_s` seconds (blocks that long while data keeps recording)."""
         self._capture_frames('_begin', average, average_s)
+
+    def deactivate(self):
+        """Stop taking the stream (the file stays open until stop_recording)."""
+        self._recording = False
 
     def stop_recording(self, capture_end=True):
         """Stop writing and finalise the file; snapshot _end frames unless
-        `capture_end` is False (used by the [c] quick capture)."""
-        if not self._recording:
-            return
-
+        `capture_end` is False."""
         self._recording = False
+        if self._fh is None:
+            return
         self._close_file()
         self._close_encoders()
 
@@ -715,30 +732,267 @@ class Recorder:
         if capture_end:
             self._capture_frames('_end')
 
+    def delete_files(self):
+        """Remove exactly the files this recording created."""
+        removed = []
+        for f in dict.fromkeys(self.files):
+            try:
+                os.remove(f)
+                removed.append(f)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                print(f'[recorder] could not delete {f}: {e}')
+        return removed
+
     @property
     def is_recording(self):
         return self._recording
 
 
+# -- recordings managed by the server -----------------------------------------
+
+RPC_ENDPOINT = 'ipc:///tmp/mim_recorder_rpc'
+DEFAULT_TEMPLATE = 'mim_{timestamp}.zst'
+_PRUNE_DONE_S = 600.0
+
+
+def default_recordings_dir():
+    """$MIM_RECORDINGS_DIR (serve.sh exports the same folder record.sh used),
+    else ./recordings of the server's working directory."""
+    return os.environ.get('MIM_RECORDINGS_DIR') or os.path.abspath('recordings')
+
+
+def parse_average(average):
+    """True -> 'mean'; 'mean' / 'median'; False / None -> None."""
+    if average is None or average is False:
+        return None
+    if average is True:
+        return 'mean'
+    if average in ('mean', 'median'):
+        return average
+    raise ValueError(f"average must be True, 'mean' or 'median', got {average!r}")
+
+
+class Recording:
+    """One recording run by a RecordingManager (in the server process)."""
+
+    def __init__(self, prefix, recorder, duration, snapshot, average):
+        self.prefix = prefix
+        self.recorder = recorder
+        self.duration = duration
+        self.snapshot = snapshot
+        self.average = average
+        self.state = 'active'       # active -> finalizing -> done
+        self.t_start = time.time()
+        self.t_done = None
+        self.delete = False
+        self.deleted = []
+        self.stop_event = threading.Event()
+        self.thread = None
+
+
+class RecordingManager:
+    """The server's recordings. `feed()` gets every message the server sends
+    to its viewers; `start` / `stop` / `status` are served over RPC
+    (Logger.record / stop_recording)."""
+
+    def __init__(self, header_fn=None, host='127.0.0.1', port=5678):
+        self.header_fn = header_fn or (lambda: [])
+        self.host, self.port = host, port
+        self._lock = threading.Lock()
+        self._recordings = {}           # prefix -> Recording
+        self._active = ()               # recorders taking the stream (tuple swap: lock-free feed)
+        self._reserved = set()
+
+    @property
+    def has_active(self):
+        return bool(self._active)
+
+    def feed(self, data):
+        for rec in self._active:
+            rec.feed(data)
+
+    def _refresh_active(self):
+        self._active = tuple(r.recorder for r in self._recordings.values()
+                             if r.state == 'active')
+
+    def _reserve_path(self, out_dir, template):
+        t = template or DEFAULT_TEMPLATE
+        if not os.path.isabs(t):
+            t = os.path.join(out_dir or default_recordings_dir(), t)
+        if not t.endswith('.zst'):
+            t += '.zst'
+        path = _fill_template(t, self._reserved)
+        self._reserved.add(path)
+        return path
+
+    def start(self, duration=None, snapshot=False, average=None, encode_video=None,
+              embed_video=False, with_timeseries=True, max_size_mb=500,
+              compression_level=10, out_dir=None, template=None):
+        if duration is not None:
+            duration = parse_duration(duration)
+        elif snapshot:
+            duration = 1.0
+        average = parse_average(average)
+        if average and duration is None:
+            raise ValueError('average needs a duration (the averaging window)')
+        enc_on = bool(encode_video)
+        size = fps = cq = denoise = kf = None
+        if isinstance(encode_video, str):
+            encode_video = encode_video.split()
+        if isinstance(encode_video, (list, tuple)):
+            size, fps, cq, denoise, kf = parse_encode_video_args(list(encode_video))
+            enc_on = True
+
+        with self._lock:
+            self._prune()
+            path = self._reserve_path(out_dir, template)
+            rec = Recorder(path, max_file_size_mb=max_size_mb,
+                           compression_level=compression_level,
+                           embed_video=embed_video, encode_video=enc_on,
+                           with_timeseries=with_timeseries, encode_size=size,
+                           encode_fps=fps, encode_cq=cq, encode_denoise=denoise,
+                           encode_keyframe_s=kf, host=self.host, port=self.port,
+                           async_write=True)
+            prefix = str(Path(path).with_suffix(''))
+            recording = Recording(prefix, rec, duration, snapshot, average)
+            rec.open(self.header_fn())
+            self._recordings[prefix] = recording
+            self._refresh_active()
+
+        recording.thread = threading.Thread(target=self._run, args=(recording,),
+                                            daemon=True, name=f'recording-{Path(path).stem}')
+        recording.thread.start()
+        return prefix
+
+    def _run(self, r):
+        try:
+            r.recorder.capture_begin(r.average, r.duration if r.average else None)
+            if r.duration is not None:
+                remaining = r.duration - (time.time() - r.t_start)
+                if remaining > 0:
+                    r.stop_event.wait(remaining)
+            else:
+                while not r.stop_event.wait(0.5):
+                    if not r.recorder.is_recording:     # size limit reached
+                        break
+            self._finish(r)
+        except Exception as e:
+            print(f'[recorder] {r.prefix}: {e}')
+            with self._lock:
+                r.state = 'done'
+                r.t_done = time.time()
+                self._refresh_active()
+
+    def _finish(self, r):
+        with self._lock:
+            r.state = 'finalizing'
+            self._refresh_active()
+        r.recorder.stop_recording(capture_end=not r.snapshot and not r.delete)
+        while True:
+            if r.delete and not r.deleted:
+                r.deleted = r.recorder.delete_files() or ['(none)']
+            with self._lock:
+                if r.delete and not r.deleted:      # delete asked for meanwhile
+                    continue
+                r.state = 'done'
+                r.t_done = time.time()
+                return
+
+    def stop(self, prefix=None, delete=False):
+        """Stop `prefix` (None: every active recording); with `delete`, its
+        files are removed once finalised. Returns the affected prefixes."""
+        with self._lock:
+            if prefix is None:
+                targets = [r for r in self._recordings.values() if r.state == 'active']
+            elif prefix in self._recordings:
+                targets = [self._recordings[prefix]]
+            else:
+                raise KeyError(f'unknown recording {prefix!r}')
+            for r in targets:
+                r.delete = r.delete or delete
+                if r.state == 'active':
+                    r.recorder.deactivate()     # the stream stops going in right away
+                    r.state = 'finalizing'
+            self._refresh_active()
+        for r in targets:
+            r.stop_event.set()
+            if r.state == 'done' and delete and not r.deleted:
+                r.deleted = r.recorder.delete_files() or ['(none)']
+        return [r.prefix for r in targets]
+
+    def status(self):
+        with self._lock:
+            out = {'active': [], 'finalizing': [], 'done': []}
+            for r in self._recordings.values():
+                out[r.state].append(r.prefix)
+            return out
+
+    def _prune(self):
+        now = time.time()
+        for p in [p for p, r in self._recordings.items()
+                  if r.state == 'done' and now - r.t_done > _PRUNE_DONE_S]:
+            del self._recordings[p]
+
+    def close_all(self, timeout=60.0):
+        self.stop()
+        for r in list(self._recordings.values()):
+            if r.thread is not None:
+                r.thread.join(timeout)
+
+    def handle_rpc(self, request):
+        """{'op': ..., ...} -> reply dict (never raises)."""
+        try:
+            op = request.get('op')
+            args = request.get('args') or {}
+            if op == 'record':
+                return {'ok': True, 'prefix': self.start(**args)}
+            if op == 'stop':
+                return {'ok': True, 'stopped': self.stop(**args)}
+            if op == 'status':
+                return {'ok': True, **self.status()}
+            return {'ok': False, 'error': f'unknown op {op!r}'}
+        except Exception as e:
+            return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+
+
+def serve_rpc(manager, endpoint=RPC_ENDPOINT):
+    """REP loop for Logger.record / stop_recording (run in a server thread)."""
+    import zmq
+    sock = zmq.Context.instance().socket(zmq.REP)
+    sock.bind(endpoint)
+    while True:
+        try:
+            request = ormsgpack.unpackb(sock.recv())
+        except Exception as e:
+            sock.send(ormsgpack.packb({'ok': False, 'error': f'bad request: {e}'}))
+            continue
+        sock.send(ormsgpack.packb(manager.handle_rpc(request)))
+
+
 def main():
+    """record.sh: keyboard front end. The recording runs in the server
+    (serve.sh); this only asks for it through a passive Logger."""
     import argparse
     import sys
     import tty
     import termios
     import select
+    try:
+        from mim_data_utils.logger import Logger
+    except ImportError:                       # run as a script from a source tree
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from mim_data_utils.logger import Logger
 
     parser = argparse.ArgumentParser(
-        description='Record mim_data_utils websocket stream to a file.')
+        description='Record the mim_data_utils stream (written by the serve.sh server).')
     parser.add_argument('path', nargs='?', default=None,
                         help='Output path template; "{timestamp}" is replaced '
-                             'per recording section (default: '
-                             'recording_{timestamp}.zst)')
+                             'per recording (default: the server\'s recordings '
+                             'folder, mim_{timestamp}.zst)')
     parser.add_argument('--max-size', type=float, default=500,
                         help='Max file size in MB (default: 500)')
-    parser.add_argument('--host', default='127.0.0.1',
-                        help='WebSocket host (default: 127.0.0.1)')
-    parser.add_argument('--port', type=int, default=5678,
-                        help='WebSocket port (default: 5678)')
     parser.add_argument('--compression-level', type=int, default=10,
                         help='Zstandard compression level 1-22 (default: 10)')
     parser.add_argument('--with-embed-video', action='store_true', default=False,
@@ -778,39 +1032,25 @@ def main():
             snapshot_s = parse_duration(args.snapshot)
         except ValueError as e:
             parser.error(str(e))
-
-    encode_video = args.with_encode_video is not None
-    encode_size, encode_fps, encode_cq, encode_denoise, encode_kf = None, None, None, None, None
-    if encode_video:
+    if args.with_encode_video is not None:
         try:
-            encode_size, encode_fps, encode_cq, encode_denoise, encode_kf = parse_encode_video_args(
-                args.with_encode_video)
+            parse_encode_video_args(args.with_encode_video)    # report bad options here
         except ValueError as e:
             parser.error(str(e))
 
-    # The path is a template filled per recording section (see _fill_template):
-    # its "{timestamp}" placeholder is replaced with the moment SPACE starts the
-    # section, so pause/resume never overwrites a previous section. The per
-    # camera .mp4 names derive from rec.path, so video files rotate too.
-    template = args.path if args.path is not None else 'recording_{timestamp}.zst'
+    opts = dict(max_size_mb=args.max_size, compression_level=args.compression_level,
+                embed_video=args.with_embed_video,
+                encode_video=(list(args.with_encode_video)
+                              if args.with_encode_video is not None else None),
+                with_timeseries=not args.without_timeseries)
+    if args.path is not None:
+        opts['template'] = os.path.abspath(args.path)
 
-    rec = Recorder(
-        path=_fill_template(template),
-        max_file_size_mb=args.max_size,
-        host=args.host,
-        port=args.port,
-        compression_level=args.compression_level,
-        embed_video=args.with_embed_video,
-        encode_video=encode_video,
-        encode_size=encode_size,
-        encode_fps=encode_fps,
-        encode_cq=encode_cq,
-        encode_denoise=encode_denoise,
-        encode_keyframe_s=encode_kf,
-        with_timeseries=not args.without_timeseries,
-    )
-
-    rec.connect()
+    logger = Logger(Logger.start_server(), start=False, make_session_active=False)
+    try:
+        logger.recordings()
+    except TimeoutError as e:
+        sys.exit(f'[recorder] {e}')
 
     print()
     if snapshot_s is not None and args.average:
@@ -825,18 +1065,13 @@ def main():
     print('  [Ctrl+C] Exit')
     print()
 
+    current = None      # this CLI's running full recording (others are left alone)
+
     def snapshot(duration_s, average=None):
-        # Current frames (_begin) + `duration_s` of data, then stop without
-        # _end frames. Each snapshot gets its own timestamped file. With
-        # `average` the _begin capture itself spans `duration_s` (combining
-        # all frames) while the data records in parallel.
-        rec.path = _fill_template(template)
-        if average:
-            rec.start_recording(average=average, average_s=duration_s)
-        else:
-            rec.start_recording()
-            time.sleep(duration_s)
-        rec.stop_recording(capture_end=False)
+        prefix = logger.record(duration_s, snapshot=True, average=average, **opts)
+        print(f'  Recording {prefix}.zst')
+        logger.wait_recording(prefix)
+        return prefix
 
     # cbreak (not raw) terminal mode: char-by-char keypresses without echo,
     # but output post-processing stays on so '\n' still maps to '\r\n' and
@@ -857,18 +1092,16 @@ def main():
                     print(f'  Captured frames + {snapshot_s * 1e3:g} ms. Press [SPACE] for the next.')
 
                 elif ch == ' ':
-                    if rec.is_recording:
-                        rec.stop_recording()
-                        print('  Stopped. Press [SPACE] to start a new recording.')
+                    if current is not None:
+                        logger.stop_recording(current)
+                        logger.wait_recording(current)
+                        print(f'  Stopped {current}.zst. Press [SPACE] to start a new recording.')
+                        current = None
                     else:
-                        # Each section gets its own file (and its own per-camera
-                        # .mp4 files, derived from rec.path) stamped with the
-                        # moment SPACE started it, so resuming after a pause
-                        # never overwrites a previous section.
-                        rec.path = _fill_template(template)
-                        rec.start_recording()
+                        current = logger.record(**opts)
+                        print(f'  Recording {current}.zst')
 
-                elif ch in ('c', 'C') and not rec.is_recording:
+                elif ch in ('c', 'C') and current is None:
                     snapshot(0.1)
                     print('  Captured frames + 100 ms. Press [SPACE] or [c].')
 
@@ -880,11 +1113,10 @@ def main():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         print()
-
-        if rec.is_recording:
-            rec.stop_recording()
-
-        rec.disconnect()
+        if current is not None:
+            logger.stop_recording(current)
+            logger.wait_recording(current, timeout=60)
+            print(f'  Stopped {current}.zst')
         print('[recorder] Done.')
 
 

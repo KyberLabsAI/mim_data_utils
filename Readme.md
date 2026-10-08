@@ -34,6 +34,32 @@ Note that clicking on the plot or zooming freezes the live-plotting. To resume t
 
 At this time, the plotter renders all data poins using the GPU.
 
+## Recording
+
+Recordings are written by the server process (`serve.sh`): every message it
+sends to the viewers also goes into the active recordings (`.zst`, readable with
+`FileLoggerReader`, plus `_begin`/`_end` camera images and optional per-camera
+H.265 `.mp4`). They land in `$MIM_RECORDINGS_DIR` (`serve.sh` sets it to the
+workspace's `recordings/`).
+
+From Python, through any `Logger` (the call only sends a request, ~1 ms):
+
+```python
+prefix = logger.record()                     # until stopped
+logger.stop_recording(prefix)                # finalised in the background
+logger.wait_recording(prefix)                # until the files are complete
+
+p = logger.record(snapshot=True)             # _begin images + 1 s of data, no _end
+p = logger.record(2, snapshot=True, average=True)   # _begin = mean of 2 s of frames
+p = logger.record(10, encode_video='480x360 15fps cq32')
+logger.stop_recording(p, delete=True)        # end it and delete its files
+logger.recordings()                          # active prefixes
+```
+
+Several recordings can run at the same time. `record.sh` is the same thing
+behind keyboard keys (SPACE start/stop or snapshot, `c` quick capture), with
+the options documented in the script; it needs `serve.sh` running.
+
 ## License and Copyrights
 
 Copyright(c) 2021 New York University.

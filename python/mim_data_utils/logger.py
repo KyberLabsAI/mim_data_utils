@@ -19,6 +19,7 @@ import multiprocessing
 
 from .scene import RawMesh, Scene, PointCloud
 from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
+from kyber_utils.iters import sync, register_sync_methods
 
 # Item types routed to the low-priority '/camera/' publisher (video frames).
 _CAMERA_TYPES = ('image', 'video_segment')
@@ -693,6 +694,7 @@ class SubprocessWriter:
     def reset(self, idx=None):
         self._send(('reset', idx))
 
+@register_sync_methods
 class Logger(threading.Thread):
     @staticmethod
     def start_server():
@@ -763,6 +765,7 @@ class Logger(threading.Thread):
             self.layout(layout_def)
 
         self.keep_running = True
+        self._own_recordings = []      # prefixes started by record() (wait_finished)
 
         if start:
             self.start()
@@ -1158,6 +1161,153 @@ class Logger(threading.Thread):
             'init_file': init_file,
             'base_url': base_url
         })
+
+    @staticmethod
+    def md_image(image, alt='', fmt='jpg', quality=85, max_width=None):
+        """Markdown for an inline image, for log_md: ``![alt](data:image/...;base64,...)``.
+
+        `image`: a numpy array (BGR as OpenCV uses, or grayscale) -- encoded as
+        `fmt` ('jpg' / 'png'), optionally downscaled to `max_width` pixels --
+        or already encoded bytes (PNG / JPEG). The image counts against the
+        viewer's 512 kB text budget per session, so prefer JPEG and a
+        modest size (a 640x360 JPEG is ~30-60 kB of base64)."""
+        import base64
+        if isinstance(image, (bytes, bytearray)):
+            data = bytes(image)
+            mime = 'png' if data[:8] == b'\x89PNG\r\n\x1a\n' else 'jpeg'
+        else:
+            import cv2
+            img = np.asarray(image)
+            if max_width is not None and img.shape[1] > max_width:
+                h = int(round(img.shape[0] * max_width / img.shape[1]))
+                img = cv2.resize(img, (int(max_width), h), interpolation=cv2.INTER_AREA)
+            ext = '.png' if fmt == 'png' else '.jpg'
+            params = [cv2.IMWRITE_JPEG_QUALITY, int(quality)] if ext == '.jpg' else []
+            ok, buf = cv2.imencode(ext, img, params)
+            if not ok:
+                raise ValueError('image encoding failed')
+            data, mime = buf.tobytes(), ('png' if ext == '.png' else 'jpeg')
+        b64 = base64.b64encode(data).decode('ascii')
+        return f'![{alt}](data:image/{mime};base64,{b64})'
+
+    def log_md(self, time_s, markdown):
+        """Log a text message, rendered as markdown in the viewer's "m" panel
+        (add it to the panel layout, e.g. ``(t/m)|img``). Each message shows as
+        a bubble with its time (and the label of any marker logged at the same
+        time); moving the time cursor highlights the last message at or before
+        it. Inline images: ``Logger.md_image(img)`` gives the markdown. The viewer keeps up to 512 kB of text per
+        session and drops the oldest messages beyond that."""
+        self._append_log({
+            'type': 'md',
+            'time': time_s,
+            'text': str(markdown),
+        })
+
+    # -- recordings (run by the server process, see recorder.RecordingManager) --
+
+    RECORDER_RPC_ENDPOINT = 'ipc:///tmp/mim_recorder_rpc'
+
+    def _recorder_rpc(self, op, timeout_ms=2000, **args):
+        import zmq
+        sock = zmq.Context.instance().socket(zmq.REQ)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.connect(self.RECORDER_RPC_ENDPOINT)
+        try:
+            sock.send(ormsgpack.packb({'op': op, 'args': args}))
+            if not sock.poll(timeout_ms):
+                raise TimeoutError('no reply from the mim_data_utils server '
+                                   '(is serve.sh running, with recording support?)')
+            reply = ormsgpack.unpackb(sock.recv())
+        finally:
+            sock.close()
+        if not reply.get('ok'):
+            raise RuntimeError(f"recording {op} failed: {reply.get('error')}")
+        return reply
+
+    def record(self, duration=None, snapshot=False, average=None, encode_video=None,
+               embed_video=False, with_timeseries=True, max_size_mb=500,
+               compression_level=10, out_dir=None, template=None):
+        """Start a recording of everything the server streams (all sessions,
+        like record.sh); returns its filename prefix (``<prefix>.zst``,
+        ``<prefix>_begin_<camera>.png``, ``<prefix>_<camera>.mp4``, ...).
+
+        The recording runs in the server process (serve.sh): this only sends a
+        request and returns right away. Several recordings may run at once.
+
+        Args:
+            duration: seconds (or '0.5s' / '100ms'); stops by itself after it.
+                None: until stop_recording(prefix).
+            snapshot: no _end frames; without a duration, 1 s.
+            average: True / 'mean' / 'median': the _begin images combine every
+                frame of the duration (static scene); needs a duration.
+            encode_video: True, or record.sh's options as a string / list
+                ('480x360 15fps cq32 denoise kf5'): H.265 .mp4 per camera.
+            embed_video, with_timeseries, max_size_mb, compression_level: as
+                record.sh's --with-embed-video, --without-timeseries,
+                --max-size, --compression-level.
+            out_dir: folder (default: the server's recordings folder,
+                $MIM_RECORDINGS_DIR set by serve.sh).
+            template: file name, '{timestamp}' filled in (default
+                'mim_{timestamp}.zst').
+        """
+        if out_dir is not None:
+            out_dir = os.path.abspath(out_dir)       # the server has its own cwd
+        if template is not None and os.path.dirname(template):
+            template = os.path.abspath(template)
+        prefix = self._recorder_rpc(
+            'record', duration=duration, snapshot=snapshot, average=average,
+            encode_video=encode_video, embed_video=embed_video,
+            with_timeseries=with_timeseries, max_size_mb=max_size_mb,
+            compression_level=compression_level, out_dir=out_dir,
+            template=template)['prefix']
+        self._own_recordings.append(prefix)
+        return prefix
+
+    def stop_recording(self, prefix=None, delete=False):
+        """End recording `prefix` (None: every active one); with `delete`, its
+        files are removed once finalised (also after it ended by itself). The
+        files are finalised in the background; see wait_recording()."""
+        return self._recorder_rpc('stop', prefix=prefix, delete=delete)['stopped']
+
+    def wait_recording(self, prefix, timeout=None, poll_s=0.05):
+        """Block until `prefix` is finalised (files complete). False on timeout."""
+        t_end = None if timeout is None else time.time() + timeout
+        while True:
+            st = self._recorder_rpc('status')
+            if prefix not in st['active'] and prefix not in st['finalizing']:
+                return True
+            if t_end is not None and time.time() > t_end:
+                return False
+            time.sleep(poll_s)
+
+    @sync
+    def wait_finished_gen(self, timeout=None, poll_s=0.05):
+        """Yield until every recording started from this logger is finished
+        (files complete); returns their prefixes. ``wait_finished()`` is the
+        blocking version. In a generator on the control loop, use
+        ``yield from logger.wait_finished_gen()``: the server is asked only
+        every `poll_s` (one local request, ~1 ms), otherwise it just yields.
+        Raises TimeoutError after `timeout` seconds."""
+        t_end = None if timeout is None else time.time() + timeout
+        mine = list(self._own_recordings)
+        next_poll = 0.0
+        while True:
+            now = time.time()
+            if now >= next_poll:
+                next_poll = now + poll_s
+                st = self._recorder_rpc('status')
+                busy = set(st['active']) | set(st['finalizing'])
+                if not busy.intersection(mine):
+                    self._own_recordings = [p for p in self._own_recordings if p not in mine]
+                    return mine
+            if t_end is not None and now > t_end:
+                raise TimeoutError(f'recordings still running after {timeout} s: '
+                                   f'{sorted(busy.intersection(mine))}')
+            yield True
+
+    def recordings(self):
+        """Prefixes of the recordings currently taking data."""
+        return self._recorder_rpc('status')['active']
 
     def log_marker(self, time_s, label, show_summary=False):
         self._append_log({

@@ -317,6 +317,8 @@ function parsewebSocketData(data) {
         // depth frame via the registered-setup replay.
     } else if (data.type == 'setup') {
         relayout = parseSetup(sd, data);
+    } else if (data.type == 'md') {
+        sd.mdLog.add(parseFloat(data.time), data.text);
     } else if (data.type == 'marker') {
         let markerTime = parseFloat(data.time);
         let showSummary = data.show_summary === true;

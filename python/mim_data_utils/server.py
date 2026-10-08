@@ -13,9 +13,11 @@ from kyber_utils.zeromq import (
 
 try:
     from mim_data_utils.logger import resolve_shm_items, pack_sample_batch
+    from mim_data_utils.recorder import RecordingManager, serve_rpc
 except ImportError:
     # server.py can be run as a plain script from the package directory.
     from logger import resolve_shm_items, pack_sample_batch
+    from recorder import RecordingManager, serve_rpc
 
 class SessionTracker:
     """Live-session bookkeeping: which sessions exist and when each last saw data.
@@ -191,6 +193,9 @@ class BinaryWebSocketServer(threading.Thread):
         # session the tracker reports live.
         self.setup_registry = setup_registry
         self.session_tracker = session_tracker
+        # RecordingManager: every message sent to the viewers also goes into
+        # the active recordings (set in run()).
+        self.recordings = None
         # Prioritized backpressure. A viewer that can't keep up otherwise grows an
         # unbounded SimpleWebSocketServer sendq, so it keeps receiving old data and
         # its lag grows without bound. We cap each client's queue depth, but at
@@ -282,6 +287,16 @@ class BinaryWebSocketServer(threading.Thread):
         be dropped anyway. `build_fn` may return None to skip sending (e.g.
         every referenced payload was already overwritten).
         """
+        recordings = self.recordings
+        if recordings is not None and recordings.has_active:
+            # Recordings take the full stream: build the payload even if every
+            # viewer is behind (viewer backpressure must not drop file data).
+            data = build_fn()
+            if data is None:
+                return
+            recordings.feed(data)
+            build_fn = lambda: data       # noqa: E731
+
         cap = self._caps.get(priority, self.ts_backlog)
         eligible = []
         for client in list(self.clients):  # list() to avoid set change during iteration
@@ -371,6 +386,21 @@ def run():
         websocket.broadcast_sessions()
 
     session_tracker.on_change = on_sessions_change
+
+    def recording_header():
+        # What a newly connecting viewer gets (send_setups): the session list
+        # and every live session's registered setups, so a recording file is
+        # self-contained.
+        msgs = [websocket.sessions_message()]
+        for name in session_tracker.snapshot():
+            msgs.append(setup_registry.snapshot(name))
+        return [m for m in msgs if m is not None]
+
+    recordings = RecordingManager(header_fn=recording_header, port=5678)
+    websocket.recordings = recordings
+    threading.Thread(target=serve_rpc, args=(recordings,), daemon=True,
+                     name='recorder-rpc').start()
+    print(f"[recorder] recordings go to {os.environ.get('MIM_RECORDINGS_DIR') or os.path.abspath('recordings')}")
 
     websocket.start()
     time.sleep(0.1)  # Give the thread time to print
@@ -571,6 +601,7 @@ def run():
             time.sleep(1.)
     except KeyboardInterrupt:
         print("\nStopped.")
+        recordings.close_all()
         sub_camera.close()
         sub_pointcloud.close()
         sub_timeseries.close()
