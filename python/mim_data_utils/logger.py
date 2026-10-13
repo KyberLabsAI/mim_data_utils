@@ -18,6 +18,7 @@ import collections
 import multiprocessing
 
 from .scene import RawMesh, Scene, PointCloud
+from .overlay import image_size, overlay_items
 from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
 from kyber_utils.iters import sync, register_sync_methods
 
@@ -32,6 +33,9 @@ _POINTCLOUD_TYPES = ('depth',)
 # replay them to a viewer that connects (or reloads) later; everything else
 # stays an opaque blob on the relay hot path.
 _SETUP_TYPES = ('setup',)
+# Image overlays (vector drawings) go to '/overlay/': the server renders them
+# into PNGs before relaying, so they must not pass through '/timeseries/' raw.
+_OVERLAY_TYPES = ('overlay',)
 
 # Session name used when the producer does not specify one.
 DEFAULT_SESSION = 'Default'
@@ -485,6 +489,7 @@ class WebsocketWriter:
         self.camera_publisher = None
         self.pointcloud_publisher = None
         self.setup_publisher = None
+        self.overlay_publisher = None
         self.num_connected_clients = None
         self._lock = threading.RLock()
     def init(self):
@@ -497,6 +502,7 @@ class WebsocketWriter:
             self.camera_publisher = ZmqPublisher(f'/camera/{self.session_name}', sndhwm=2)
             self.pointcloud_publisher = ZmqPublisher(f'/pointcloud/{self.session_name}', sndhwm=2)
             self.setup_publisher = ZmqPublisher('/setup/')
+            self.overlay_publisher = ZmqPublisher(f'/overlay/{self.session_name}')
             self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
 
             if not self.publisher.wait_connected():
@@ -507,6 +513,8 @@ class WebsocketWriter:
                 raise ConnectionError('Point cloud publisher failed to connect to ZMQ broker')
             if not self.setup_publisher.wait_connected():
                 raise ConnectionError('Setup publisher failed to connect to ZMQ broker')
+            if not self.overlay_publisher.wait_connected():
+                raise ConnectionError('Overlay publisher failed to connect to ZMQ broker')
 
     def set_session(self, name):
         with self._lock:
@@ -531,11 +539,13 @@ class WebsocketWriter:
         camera_items = [d for d in data if d.get('type') in _CAMERA_TYPES]
         pointcloud_items = [d for d in data if d.get('type') in _POINTCLOUD_TYPES]
         setup_items = [d for d in data if d.get('type') in _SETUP_TYPES]
+        overlay_items_ = [d for d in data if d.get('type') in _OVERLAY_TYPES]
         other_items = [
             d for d in data
             if d.get('type') not in _CAMERA_TYPES
             and d.get('type') not in _POINTCLOUD_TYPES
             and d.get('type') not in _SETUP_TYPES
+            and d.get('type') not in _OVERLAY_TYPES
         ]
 
         setup_bytes = (
@@ -553,6 +563,10 @@ class WebsocketWriter:
         other_bytes = (
             ormsgpack.packb(other_items, option=ormsgpack.OPT_SERIALIZE_NUMPY)
             if other_items else None
+        )
+        overlay_bytes = (
+            ormsgpack.packb(overlay_items_, option=ormsgpack.OPT_SERIALIZE_NUMPY)
+            if overlay_items_ else None
         )
 
         # Debug: track image age at publish time
@@ -592,6 +606,8 @@ class WebsocketWriter:
                 self.pointcloud_publisher.send(pointcloud_bytes)
             if other_bytes is not None:
                 self.publisher.send(other_bytes)
+            if overlay_bytes is not None:
+                self.overlay_publisher.send(overlay_bytes)
 
     def close(self):
         with self._lock:
@@ -607,6 +623,9 @@ class WebsocketWriter:
             if getattr(self, 'setup_publisher', None):
                 self.setup_publisher.close()
                 self.setup_publisher = None
+            if getattr(self, 'overlay_publisher', None):
+                self.overlay_publisher.close()
+                self.overlay_publisher = None
 
     def wait_for_client(self, timeout_s=5):
         # The publishers are created lazily on the first log(), which happens
@@ -1059,12 +1078,19 @@ class Logger(threading.Thread):
             'payload': res
         })
 
-    def log_image(self, name, data, time):
+    def log_image(self, name, data, time, number=None):
+        """Log an encoded (JPEG/PNG) image under ``name``. ``number`` is an
+        optional frame number that overlays (log_overlay) refer to."""
         item = {
             'type': 'image',
             'time': time,
             'name': name,
         }
+        if number is not None:
+            item['number'] = int(number)
+        size = image_size(data)
+        if size is not None:
+            item['size'] = list(size)
         ref = self._shm_write(name, data)
         if ref is not None:
             item['shm'] = {'payload': ref}
@@ -1189,6 +1215,27 @@ class Logger(threading.Thread):
             data, mime = buf.tobytes(), ('png' if ext == '.png' else 'jpeg')
         b64 = base64.b64encode(data).decode('ascii')
         return f'![{alt}](data:image/{mime};base64,{b64})'
+
+    def log_overlay(self, time_s, img_topic, img_number, overlay_name, overlay, size=None):
+        """Log a vector overlay for the frame ``img_number`` of the image topic
+        ``img_topic`` (see log_image(..., number=)). ``overlay`` is an
+        ``Overlay`` (text, rect, lines, circle) or a list of its item dicts,
+        in image pixel coordinates.
+
+        The server renders it into a transparent PNG per ``overlay_name``; the
+        viewer composites it over that frame and can toggle each overlay name
+        per image source. ``size`` = (w, h) of the image; defaults to the size
+        the server last saw on ``img_topic``. With ``img_number=None`` the
+        overlay matches the frame logged at exactly ``time_s``."""
+        self._append_log({
+            'type': 'overlay',
+            'time': time_s,
+            'name': img_topic,
+            'number': None if img_number is None else int(img_number),
+            'overlay': overlay_name,
+            'items': overlay_items(overlay),
+            'size': None if size is None else [int(size[0]), int(size[1])],
+        })
 
     def log_md(self, time_s, markdown):
         """Log a text message, rendered as markdown in the viewer's "m" panel

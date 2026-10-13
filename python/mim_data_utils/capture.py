@@ -4,7 +4,9 @@ Two sources, mirroring the old ``capture_frame.sh``:
   * shared memory — every ``/dev/shm/kyb_*`` camera segment (color + depth), read
     with ``kyber_utils``' dtype-aware ``SharedImageReader`` so depth is captured
     correctly (the old script hardcoded uint8 and garbled it);
-  * websocket — the latest JPEG per camera on the mim data stream.
+  * websocket — the latest JPEG per camera on the mim data stream, plus one image
+    per image overlay (Logger.log_overlay): frame + that overlay, and the
+    overlay alone.
 
 ``recorder.py`` calls :func:`capture_frames` to store ``_begin`` / ``_end`` frames
 next to each ``.zst`` recording. With ``average`` ('mean' or 'median') every new
@@ -157,10 +159,84 @@ def capture_shm(prefix, out_dir, average=None, duration=0.0):
     return saved
 
 
-def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None):
+def _field(item, key):
+    v = item.get(key.encode(), item.get(key))
+    return v.decode('utf-8', 'replace') if isinstance(v, bytes) and key in ('type', 'name', 'overlay') else v
+
+
+def _frame_key(number, t):
+    """Key matching an image frame with its overlays (see js/overlay_store.js)."""
+    return ('n', int(number)) if number is not None else ('t', t)
+
+
+def _overlay_names(cam_overlays, keys=None):
+    """Overlay names in {frame key: {name: overlay}}, of `keys` only if given."""
+    keys = cam_overlays.keys() if keys is None else [k for k in keys if k in cam_overlays]
+    return {name for k in keys for name in cam_overlays[k]}
+
+
+def _full_overlay(overlay, size):
+    """A rendered overlay (PNG cropped at `offset`) as a full-size BGRA image."""
+    import cv2
+    import numpy as np
+    w, h = size
+    full = np.zeros((h, w, 4), np.uint8)
+    if not overlay['payload']:
+        return full
+    crop = cv2.imdecode(np.frombuffer(overlay['payload'], np.uint8), cv2.IMREAD_UNCHANGED)
+    if crop is None:
+        return full
+    if crop.ndim == 2 or crop.shape[2] == 3:
+        crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGRA if crop.ndim == 2 else cv2.COLOR_BGR2BGRA)
+    x, y = (int(v) for v in (overlay['offset'] or (0, 0)))
+    x1, y1 = min(w, x + crop.shape[1]), min(h, y + crop.shape[0])
+    if x1 > x and y1 > y:
+        full[y:y1, x:x1] = crop[:y1 - y, :x1 - x]
+    return full
+
+
+def _composite(img, overlays_bgra):
+    """Alpha-blend full-size BGRA overlays (in order) onto a BGR/gray image."""
+    import cv2
+    import numpy as np
+    out = img if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    out = out.astype(np.float32)
+    for ov in overlays_bgra:
+        a = ov[..., 3:4].astype(np.float32) / 255.0
+        out = out * (1.0 - a) + ov[..., :3].astype(np.float32) * a
+    return (out + 0.5).astype(np.uint8)
+
+
+def _write_overlay_image(prefix, out_dir, safe, name, img, overlay):
+    """The overlay image `name` of camera `safe`, as in the viewer: the frame
+    with that overlay drawn over it (``_overlay_<name>.png``), plus the overlay
+    alone, full size and transparent (``_overlay_<name>_alpha.png``)."""
+    import cv2
+    saved = []
+    h, w = img.shape[:2]
+    ov = _full_overlay(overlay, (w, h))
+    stem = os.path.join(out_dir, f'{prefix}_{safe}_overlay_{_safe(name)}')
+    for out, data in ((f'{stem}.png', _composite(img, [ov])), (f'{stem}_alpha.png', ov)):
+        if cv2.imwrite(out, data):
+            saved.append(out)
+            print(f'[capture] {out}')
+    return saved
+
+
+def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None,
+               overlay_wait=0.6):
     """Snapshot the latest JPEG per camera from the mim websocket. With `average`,
     decode every JPEG of the `duration` window and combine them per camera into a
-    lossless PNG (see combine_frames). Returns saved paths."""
+    lossless PNG (see combine_frames). Returns saved paths.
+
+    Each image overlay (Logger.log_overlay) of a camera is saved as an image of
+    its own, like in the viewer: the frame with that overlay drawn over it
+    (``_overlay_<name>.png``) and the overlay alone (``_overlay_<name>_alpha.png``,
+    full size, transparent). Overlays arrive after their image and not every
+    frame has one (e.g. AprilTags at the detector rate), so capture listens up
+    to `overlay_wait` s longer until every overlay seen has a frame, and uses
+    the first frame (with `average`: the last) that has that overlay, over the
+    averaged image with `average`."""
     saved = []
     try:
         import ormsgpack
@@ -175,19 +251,28 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None):
         print(f'[capture] websocket connect failed ({e})')
         return saved
 
-    seen = set()
-    collected = {}   # average: camera -> [jpeg payloads]
-    deadline = time.monotonic() + duration
+    frames = {}      # camera -> [(key, payload, in_window)] in arrival order
+    overlays = {}    # camera -> {key: {overlay name: {payload, offset}}}
+    t_start = time.monotonic()
+    deadline = t_start + duration
     try:
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            ws.settimeout(remaining)
+            now = time.monotonic()
+            if now >= deadline:
+                # Extend the window while an overlay seen has no frame yet.
+                pending = [c for c in overlays
+                           if _overlay_names(overlays[c]) - _overlay_names(
+                               overlays[c], [f[0] for f in frames.get(c, [])])]
+                if not pending or now >= t_start + duration + overlay_wait:
+                    break
+                deadline = min(now + 0.05, t_start + duration + overlay_wait)
+            ws.settimeout(max(1e-3, deadline - time.monotonic()))
             try:
                 message = ws.recv()
             except Exception:
-                break
+                if time.monotonic() >= t_start + duration + overlay_wait:
+                    break
+                continue
             if not isinstance(message, (bytes, bytearray)):
                 continue
             try:
@@ -196,54 +281,91 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None):
                 continue
             if not isinstance(items, list):
                 continue
+            in_window = time.monotonic() < t_start + duration
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                if item.get(b'type', item.get('type')) not in (b'image', 'image'):
+                kind = _field(item, 'type')
+                iname = _field(item, 'name')
+                if iname is None:
                     continue
-                iname = item.get(b'name', item.get('name'))
-                payload = item.get(b'payload', item.get('payload'))
-                if iname is None or payload is None:
-                    continue
-                if isinstance(iname, bytes):
-                    iname = iname.decode('utf-8', 'replace')
                 safe = _safe(iname)
-                if average:
-                    collected.setdefault(safe, []).append(bytes(payload))
-                    continue
-                if safe in seen:
-                    continue
-                out = os.path.join(out_dir, f'{prefix}_{safe}.jpg')
-                try:
-                    with open(out, 'wb') as f:
-                        f.write(payload)
-                    seen.add(safe)
-                    saved.append(out)
-                    print(f'[capture] {out}')
-                except Exception as e:
-                    print(f'[capture] failed to write {out} ({e})')
+                key = _frame_key(_field(item, 'number'), _field(item, 'time'))
+                if kind == 'image':
+                    payload = _field(item, 'payload')
+                    if payload is None:
+                        continue
+                    # After the window only keep collecting frames that may
+                    # still get overlays; without averaging the first
+                    # frame is enough for cameras without overlays.
+                    if not average and not in_window and safe not in overlays:
+                        continue
+                    frames.setdefault(safe, []).append((key, bytes(payload), in_window))
+                elif kind == 'image_overlay':
+                    overlays.setdefault(safe, {}).setdefault(key, {})[
+                        _field(item, 'overlay') or 'overlay'] = {
+                            'payload': _field(item, 'payload'),
+                            'offset': _field(item, 'offset')}
     finally:
         try:
             ws.close()
         except Exception:
             pass
 
-    for safe, payloads in collected.items():
-        try:
-            import cv2
-            import numpy as np
-            frames = [cv2.imdecode(np.frombuffer(p, np.uint8), cv2.IMREAD_UNCHANGED) for p in payloads]
-            frames = [f for f in frames if f is not None]
-            shapes = {f.shape for f in frames}
-            if not frames or len(shapes) != 1:
-                print(f'[capture] {safe}: no consistent frames to average')
+    import cv2
+    import numpy as np
+
+    for safe, cam_frames in frames.items():
+        if not cam_frames:
+            continue
+        payload = cam_frames[0][1]
+        img = None
+        # Averaging uses the window's frames, not those that came in while
+        # waiting for overlays.
+        window_frames = [f for f in cam_frames if f[2]] or cam_frames[:1]
+        if average:
+            try:
+                decoded = [cv2.imdecode(np.frombuffer(p, np.uint8), cv2.IMREAD_UNCHANGED)
+                           for _, p, _ in window_frames]
+                decoded = [f for f in decoded if f is not None]
+                shapes = {f.shape for f in decoded}
+                if not decoded or len(shapes) != 1:
+                    print(f'[capture] {safe}: no consistent frames to average')
+                    continue
+                img = combine_frames(decoded, average)
+                out = os.path.join(out_dir, f'{prefix}_{safe}.png')
+                if cv2.imwrite(out, img):
+                    saved.append(out)
+                    print(f'[capture] {out} ({average} of {len(decoded)} frames)')
+            except Exception as e:
+                print(f'[capture] {safe}: averaging failed ({e})')
                 continue
-            out = os.path.join(out_dir, f'{prefix}_{safe}.png')
-            if cv2.imwrite(out, combine_frames(frames, average)):
+        else:
+            out = os.path.join(out_dir, f'{prefix}_{safe}.jpg')
+            try:
+                with open(out, 'wb') as f:
+                    f.write(payload)
                 saved.append(out)
-                print(f'[capture] {out} ({average} of {len(frames)} frames)')
-        except Exception as e:
-            print(f'[capture] {safe}: averaging failed ({e})')
+                print(f'[capture] {out}')
+            except Exception as e:
+                print(f'[capture] failed to write {out} ({e})')
+                continue
+
+        cam_ovs = overlays.get(safe, {})
+        for name in sorted(_overlay_names(cam_ovs)):
+            with_ov = [(k, p) for k, p, _ in cam_frames if name in cam_ovs.get(k, {})]
+            if not with_ov:
+                print(f'[capture] {safe}: no frame with overlay {name!r} arrived '
+                      f'within {overlay_wait} s')
+                continue
+            key, frame_payload = with_ov[-1] if average else with_ov[0]
+            try:
+                base = img if average else cv2.imdecode(
+                    np.frombuffer(frame_payload, np.uint8), cv2.IMREAD_UNCHANGED)
+                saved += _write_overlay_image(prefix, out_dir, safe, name, base,
+                                              cam_ovs[key][name])
+            except Exception as e:
+                print(f'[capture] {safe}: overlay {name!r} export failed ({e})')
     return saved
 
 

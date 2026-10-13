@@ -3,9 +3,11 @@ class ImageStore {
         this.maxFrames = maxFrames || 5000;
         this.times = [];
         this.blobs = [];   // Uint8Array of compressed JPEG bytes; decoded lazily on display.
+        this.numbers = []; // frame number from the producer (log_image number=), or null
     }
 
-    addFrame(time, binaryData) {
+    addFrame(time, binaryData, number) {
+        number = number == null ? null : number;
         // Store only the compressed bytes. Previously this created a Blob + an
         // object URL for *every* received frame (30-60/s) and retained them for
         // the whole ring buffer, churning ArrayBuffers through the GC and
@@ -25,15 +27,18 @@ class ImageStore {
             idx = lo;
             this.times.splice(idx, 0, time);
             this.blobs.splice(idx, 0, binaryData);
+            this.numbers.splice(idx, 0, number);
         } else {
             this.times.push(time);
             this.blobs.push(binaryData);
+            this.numbers.push(number);
         }
 
         // Evict oldest frames if over limit
         while (this.times.length > this.maxFrames) {
             this.times.shift();
             this.blobs.shift();
+            this.numbers.shift();
         }
     }
 
@@ -51,7 +56,29 @@ class ImageStore {
         }
         // Return the frame's stable timestamp alongside its bytes so the
         // consumer can dedupe by time (index is not stable across eviction).
-        return { time: times[lo], bytes: this.blobs[lo] };
+        return { time: times[lo], bytes: this.blobs[lo], number: this.numbers[lo] };
+    }
+
+    /**
+     * Newest frame at or before `time` (and not older than `time - maxAge`)
+     * for which `accept(number, time)` holds, or null.
+     */
+    findFrameAtOrBefore(time, accept, maxAge) {
+        let times = this.times;
+        let len = times.length;
+        if (len === 0 || time < times[0]) return null;
+        let lo = 0, hi = len - 1;
+        while (lo < hi) {
+            let mid = (lo + hi + 1) >> 1;
+            if (times[mid] <= time) lo = mid;
+            else hi = mid - 1;
+        }
+        for (let i = lo; i >= 0 && times[i] >= time - maxAge; i--) {
+            if (accept(this.numbers[i], times[i])) {
+                return { time: times[i], bytes: this.blobs[i], number: this.numbers[i] };
+            }
+        }
+        return null;
     }
 
     evictRange(timeStart, timeEnd) {
@@ -78,10 +105,12 @@ class ImageStore {
 
         this.times.splice(start, end - start);
         this.blobs.splice(start, end - start);
+        this.numbers.splice(start, end - start);
     }
 
     clear() {
         this.times = [];
         this.blobs = [];
+        this.numbers = [];
     }
 }

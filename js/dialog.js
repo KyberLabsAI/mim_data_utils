@@ -162,6 +162,30 @@ const _dialogCSS = `
     gap: 4px;
     cursor: pointer;
 }
+.custom-dialog .toggle-row.overlay-image-row {
+    margin-left: 22px;
+}
+.custom-dialog .overlay-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    margin-left: 22px;
+    font-size: 12px;
+    color: #555;
+}
+.custom-dialog .overlay-row label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+.custom-dialog .overlay-row input[type=checkbox] {
+    margin: 0;
+}
+.custom-dialog .overlay-row input[type=number] {
+    width: 4.5em;
+}
 .custom-dialog .toggle-empty {
     font-size: 12px;
     color: #888;

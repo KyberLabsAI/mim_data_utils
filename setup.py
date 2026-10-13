@@ -64,6 +64,11 @@ setup(
         'meshio',
         'pyzmq'
     ],
+    extras_require={
+        # Image overlay rendering in the server: skia draws antialiased at
+        # sub-pixel positions; without it, Pillow with supersampling is used.
+        'overlay': ['skia-python', 'Pillow'],
+    },
     zip_safe=True,
     maintainer="Julian Viereck",
     maintainer_email="jviereck@nyu.edu",

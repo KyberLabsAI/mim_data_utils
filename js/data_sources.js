@@ -294,8 +294,14 @@ function parsewebSocketData(data) {
         if (frozen && cam.imageStore.times.length >= cam.imageStore.maxFrames) {
             // Don't evict frozen images — drop the incoming frame instead
         } else {
-            cam.addImage(imgTime, data.payload);
+            cam.addImage(imgTime, data.payload, data.number);
         }
+    } else if (data.type == 'image_overlay') {
+        // Rendered overlay PNG (Logger.log_overlay) for one frame of image
+        // source data.name; payload is null for an empty overlay.
+        let cam = getOrCreateCamera(sd, data.name || 'default');
+        cam.addOverlay(data.overlay || 'overlay', data.number, parseFloat(data.time),
+                       data.payload, data.offset);
     } else if (data.type == 'video_segment') {
         let cam = getOrCreateCamera(sd, data.name || 'default');
         cam.addVideoSegment(data);

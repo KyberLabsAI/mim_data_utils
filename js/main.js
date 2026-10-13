@@ -19,11 +19,17 @@ let camerasContainer = document.getElementById('camerasContainer');
 function getOrCreateCamera(sd, name) {
     if (sd.cameras.has(name)) return sd.cameras.get(name);
     let cam = new CameraPlayback(name, camerasContainer);
+    // Overlay images (one per overlay name) appear with their first overlay.
+    cam.onOverlayView = view => {
+        // Its hover bar edits overlayConfig(name) in place.
+        view.onSettingsChange = () => persistVisibility();
+        view.setShown(sd === currentSession && !disabledImageSources.has(view.name));
+    };
     sd.cameras.set(name, cam);
     if (sd !== currentSession) {
         // Background session: panel exists but stays hidden until the session
         // is switched to.
-        cam.container.style.display = 'none';
+        cam.hideAll();
     } else {
         // A newly-appearing source honors any saved "disabled" selection; new
         // sources default to shown.
@@ -43,6 +49,24 @@ let sceneObjectsHidden = !!currentSession.settings.sceneObjectsHidden;
 // 'height': every image fits in the img panel's height (they share it).
 // 'width': every image is as wide as the panel; the panel scrolls vertically.
 let imageFill = currentSession.settings.imageFill || 'height';
+// Per image source settings of its overlay images (Logger.log_overlay; each
+// overlay name is an image of its own, shown/hidden via disabledImageSources
+// under overlayViewName()): {source: {liveView: LIVE_VIEW_MODES value}}.
+// See overlayConfig().
+let imageOverlays = cloneImageOverlays(currentSession.settings.imageOverlays);
+
+
+function cloneImageOverlays(v) {
+    return JSON.parse(JSON.stringify(v || {}));
+}
+
+function overlayConfig(name) {
+    let cfg = imageOverlays[name];
+    if (!cfg) {
+        cfg = imageOverlays[name] = { liveView: 'none' };
+    }
+    return cfg;
+}
 
 // A scene entry is a streamed point cloud iff it exposes addFrame() (PointCloud3D).
 function isPointCloudEntry(entry) {
@@ -51,7 +75,8 @@ function isPointCloudEntry(entry) {
 
 function applyImageVisibility() {
     cameras.forEach(cam => {
-        cam.container.style.display = disabledImageSources.has(cam.name) ? 'none' : '';
+        cam.setShown(!disabledImageSources.has(cam.name));
+        cam.overlayViews.forEach(v => v.setShown(!disabledImageSources.has(v.name)));
     });
 }
 
@@ -77,6 +102,7 @@ function persistVisibility() {
     currentSession.settings.disabledPointClouds = [...disabledPointClouds];
     currentSession.settings.sceneObjectsHidden = sceneObjectsHidden;
     currentSession.settings.imageFill = imageFill;
+    currentSession.settings.imageOverlays = imageOverlays;
     persistSessionSettings(currentSession);
 }
 
@@ -529,6 +555,38 @@ function openLayoutWindow(focusTraces = false) {
         return label;
     }
 
+    // Overlay images of one image source, grouped (indented) under its row:
+    // a show/hide checkbox per overlay image, then the source's live view
+    // setting for them.
+    function appendOverlayRows(list, cam) {
+        const names = [...cam.overlayViews.keys()].sort();
+        if (names.length === 0) return;
+        names.forEach(ov => {
+            const viewName = overlayViewName(cam.name, ov);
+            const row = makeRow(ov, !disabledImageSources.has(viewName), on => {
+                if (on) disabledImageSources.delete(viewName);
+                else disabledImageSources.add(viewName);
+                applyImageVisibility();
+                persistVisibility();
+            });
+            row.classList.add('overlay-image-row');
+            list.appendChild(row);
+        });
+        const cfg = overlayConfig(cam.name);
+        const row = document.createElement('div');
+        row.className = 'overlay-row';
+        const liveLabel = document.createElement('label');
+        liveLabel.title = 'Show the newest camera frame small in a corner ' +
+            'of the overlay images.';
+        liveLabel.appendChild(document.createTextNode('live view '));
+        liveLabel.appendChild(makeLiveViewSelect(cfg.liveView, mode => {
+            cfg.liveView = mode;
+            persistVisibility();
+        }));
+        row.appendChild(liveLabel);
+        list.appendChild(row);
+    }
+
     function populate() {
         // Visuals: sorted image source names.
         visualsList.innerHTML = '';
@@ -546,6 +604,7 @@ function openLayoutWindow(focusTraces = false) {
                     applyImageVisibility();
                     persistVisibility();
                 }));
+                appendOverlayRows(visualsList, cameras.get(name));
             });
         }
 
@@ -1030,8 +1089,14 @@ let draw = () => {
             _imgDebug.lastSyncTime = absTime;
         }
         cameras.forEach(cam => {
-            if (disabledImageSources.has(cam.name)) return;
-            cam.syncToTime(absTime);
+            if (!disabledImageSources.has(cam.name)) cam.syncToTime(absTime);
+            if (cam.overlayViews.size === 0) return;
+            const cfg = overlayConfig(cam.name);
+            cam.overlayViews.forEach(view => {
+                if (disabledImageSources.has(view.name)) return;
+                view.sync(absTime, cfg.liveView || 'none');
+                view.syncToolbar(cfg);
+            });
         });
     }
 

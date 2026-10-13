@@ -21,7 +21,8 @@ from pathlib import Path
 import ormsgpack
 import zstandard
 
-_VIDEO_TYPES = {b'image', b'video_segment', 'image', 'video_segment'}
+_VIDEO_TYPES = {b'image', b'video_segment', 'image', 'video_segment',
+                b'image_overlay', 'image_overlay'}
 _TIMESERIES_TYPES = {b'sample', b'depth', 'sample', 'depth', b'sample_batch', 'sample_batch'}
 
 # Frames buffered per camera before fps is estimated and ffmpeg is launched.

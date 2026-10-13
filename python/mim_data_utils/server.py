@@ -14,10 +14,12 @@ from kyber_utils.zeromq import (
 try:
     from mim_data_utils.logger import resolve_shm_items, pack_sample_batch
     from mim_data_utils.recorder import RecordingManager, serve_rpc
+    from mim_data_utils.overlay import OverlayRenderer
 except ImportError:
     # server.py can be run as a plain script from the package directory.
     from logger import resolve_shm_items, pack_sample_batch
     from recorder import RecordingManager, serve_rpc
+    from overlay import OverlayRenderer
 
 class SessionTracker:
     """Live-session bookkeeping: which sessions exist and when each last saw data.
@@ -419,6 +421,33 @@ def run():
     _camera_debug_frame_count = [0]
     _camera_debug_last_print = [time.time()]
 
+    # Overlays are rendered to PNG on their own thread and relayed like camera
+    # frames (same backpressure priority, also fed to recordings).
+    overlay_renderer = OverlayRenderer(
+        lambda items: websocket.broadcast(
+            ormsgpack.packb(items, option=ormsgpack.OPT_SERIALIZE_NUMPY),
+            priority='camera'))
+    _overlay_last_print = [time.time()]
+
+    def on_overlay(topic, data):
+        session = topic_session(topic)
+        if session is None:
+            return
+        session_tracker.touch(session)
+        try:
+            items = ormsgpack.unpackb(data)
+        except Exception:
+            return
+        overlay_renderer.submit([it for it in items if isinstance(it, dict)])
+
+        now = time.time()
+        if now - _overlay_last_print[0] >= 10.0 and overlay_renderer.rendered:
+            r = overlay_renderer
+            print(f"[overlay] {r.rendered} rendered "
+                  f"({1e3 * r.render_s / r.rendered:.1f} ms avg), {r.dropped} dropped")
+            r.rendered, r.render_s, r.dropped = 0, 0.0, 0
+            _overlay_last_print[0] = now
+
     def on_camera(topic, data):
         session = topic_session(topic)
         if session is None:
@@ -433,6 +462,10 @@ def run():
             items = ormsgpack.unpackb(data)
             n_imgs = sum(1 for item in items if item.get(b'type') == b'image' or item.get('type') == 'image')
             _camera_debug_frame_count[0] += n_imgs
+            for item in items:
+                if item.get('type') == 'image' and item.get('size'):
+                    overlay_renderer.note_image_size(
+                        item.get('session', session), item.get('name'), item['size'])
         except Exception:
             pass
         # Print camera relay stats every 2 seconds
@@ -594,6 +627,7 @@ def run():
     sub_pointcloud = ZmqSubscriber('/pointcloud/', callback=on_pointcloud)
     sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
     sub_setup = ZmqSubscriber('/setup/', callback=on_setup)
+    sub_overlay = ZmqSubscriber('/overlay/', callback=on_overlay)
 
     print("Publishing timeseries (Ctrl+C to stop)...")
     try:
@@ -606,6 +640,8 @@ def run():
         sub_pointcloud.close()
         sub_timeseries.close()
         sub_setup.close()
+        sub_overlay.close()
+        overlay_renderer.stop()
 
 
 if __name__ == "__main__":
