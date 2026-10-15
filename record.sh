@@ -16,6 +16,7 @@ mkdir -p "$RECORDINGS_DIR"
 #   ./record.sh --with-encode-video 480x360 15fps cq32   # ~50 MB per 30 min
 #   ./record.sh --with-encode-video 480x360 15fps cq32 denoise   # ~36 MB per 30 min
 #   ./record.sh --with-encode-video 480x360 15fps cq32 denoise kf5   # ~25 MB per 30 min
+#   ./record.sh --without-timeseries --with-encode-video 24fps cq34 denoise kf5   # compact 30 min recording
 # kfN: keyframe every N s (default 2). Longer = smaller file (keyframes dominate
 # at low res/fps) but coarser seeking and up to N s until a live viewer decodes.
 # denoise / denoiseN applies ffmpeg hqdn3d (default strength 4) before the

@@ -297,8 +297,14 @@ class FileLoggerReader:
 
             t = self._entry_time(entry)
             if t is None:
+                if self._t_read_max is None:
+                    # Nothing timed read yet (e.g. the setup at the start of
+                    # the file): hand it out as is. A 0.0 stand-in would sit in
+                    # the heap and make the span to the first (epoch) stamp
+                    # look like a clock jump.
+                    return entry
                 # Not orderable: leave it where the stream put it.
-                t = self._t_read_max if self._t_read_max is not None else 0.0
+                t = self._t_read_max
 
             if self._t_read_max is None or t >= self._t_read_max:
                 self._t_read_max = t

@@ -1005,8 +1005,13 @@ def main():
         help="Encode each camera's images into an H.265 .mp4 beside the "
              'recording (GPU hevc_nvenc). Optional OPT args: SIZE '
              '(640x360, 640×360, or 720p/320p/…) and/or FPS (24fps or 24) '
-             'to rescale and/or cap frame rate before encode. '
-             'Example: --with-encode-video 640×360 24fps')
+             'to rescale and/or cap frame rate before encode; cqNN '
+             '(constant quality, default cq30, higher = smaller); '
+             'denoise/denoiseN (hqdn3d before encode, ~-35%% size); '
+             'kfN (keyframe every N s, default 2). '
+             'Example: --with-encode-video 640×360 24fps. '
+             'Compact 30 min recording: --without-timeseries '
+             '--with-encode-video 24fps cq34 denoise kf5')
     parser.add_argument('--without-timeseries', action='store_true', default=False,
                         help='Do not log timeseries (sample/depth) data to the '
                              'recording (logged by default)')
