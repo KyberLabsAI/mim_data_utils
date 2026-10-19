@@ -85,6 +85,29 @@ def test_renderer_waits_for_size():
     assert out['size'] == [32, 24] and out['payload'][:4] == b'\x89PNG'
 
 
+def test_renderer_drops_new_items_when_queue_full():
+    import queue
+    r = OverlayRenderer(lambda items: None)
+    r.stop()
+    # Stand-in for the render process's queue, which nothing drains.
+    r._stop = False
+    r._proc = type('Alive', (), {'is_alive': lambda self: True})()
+    r._in = queue.Queue(maxsize=2)
+    items = [{'type': 'overlay', 'number': i, 'items': []} for i in range(5)]
+    r.submit(items)
+    assert r.dropped == 3 and r.dropped_full == 3
+    # The first two stay queued in order; the new ones were dropped.
+    assert [r._in.get_nowait()[1]['number'] for _ in range(2)] == [0, 1]
+    # A size that doesn't fit is not remembered, so it is resent later.
+    r._in = queue.Queue(maxsize=1)
+    r._in.put_nowait(('render', {}))
+    r.note_image_size('S', 'cam', (32, 24))
+    assert ('S', 'cam') not in r._sizes_sent
+    r._in.get_nowait()
+    r.note_image_size('S', 'cam', (32, 24))
+    assert r._sizes_sent[('S', 'cam')] == (32, 24)
+
+
 def test_overlay_items_routed_to_overlay_topic():
     sent = {}
 

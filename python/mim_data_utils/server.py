@@ -421,8 +421,10 @@ def run():
     _camera_debug_frame_count = [0]
     _camera_debug_last_print = [time.time()]
 
-    # Overlays are rendered to PNG on their own thread and relayed like camera
-    # frames (same backpressure priority, also fed to recordings).
+    # Overlays are rendered to PNG in a separate process (no GIL or CPU core
+    # shared with the relaying; new overlays are dropped while its queue is
+    # full) and relayed like camera frames (same backpressure priority, also
+    # fed to recordings).
     overlay_renderer = OverlayRenderer(
         lambda items: websocket.broadcast(
             ormsgpack.packb(items, option=ormsgpack.OPT_SERIALIZE_NUMPY),
@@ -444,8 +446,9 @@ def run():
         if now - _overlay_last_print[0] >= 10.0 and overlay_renderer.rendered:
             r = overlay_renderer
             print(f"[overlay] {r.rendered} rendered "
-                  f"({1e3 * r.render_s / r.rendered:.1f} ms avg), {r.dropped} dropped")
-            r.rendered, r.render_s, r.dropped = 0, 0.0, 0
+                  f"({1e3 * r.render_s / r.rendered:.1f} ms avg), {r.dropped} dropped "
+                  f"({r.dropped_full} on a full queue)")
+            r.rendered, r.render_s, r.dropped, r.dropped_full = 0, 0.0, 0, 0
             _overlay_last_print[0] = now
 
     def on_camera(topic, data):

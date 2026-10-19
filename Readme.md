@@ -59,7 +59,11 @@ server last saw on that topic.
 
 The server renders each overlay into a transparent PNG cropped to the drawn
 area, antialiased at sub-pixel positions with skia (`pip install skia-python`;
-without it, Pillow with 4x supersampling, about 4x slower), and sends only that; the camera frame is not sent again. In the viewer
+without it, Pillow with 4x supersampling, about 4x slower), and sends only that; the camera frame is not sent again.
+Rendering runs in a separate Python process, on the CPUs the server is not
+pinned to and at a lower priority, so it does not slow down the relaying of
+the other data. Its instruction queue holds 64 overlays; while it is full, new
+overlays are dropped (the server's `[overlay]` stats line counts them). In the viewer
 every overlay name is an image of its own, `<camera> / <overlay>`, placed
 right after the camera image: the frame with only that overlay drawn over it.
 *Set Layout -> Visuals* groups these overlay images under their camera (a

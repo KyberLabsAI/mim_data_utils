@@ -2,9 +2,10 @@
 
 Producers build an `Overlay` (text, rectangles, lines, circles) and log it with
 `Logger.log_overlay(time, img_topic, img_number, overlay_name, overlay)`. The
-server process renders it with `render_overlay` into a transparent PNG cropped
-to the drawn area and sends that to the viewer, which composites it over the
-image frame with the same number.
+server hands it to a separate render process (`OverlayRenderer`), which renders
+it with `render_overlay` into a transparent PNG cropped to the drawn area; the
+server sends that to the viewer, which composites it over the image frame with
+the same number.
 
 Coordinates are image pixels (floats are fine), colors RGB or RGBA 0-255.
 """
@@ -333,99 +334,227 @@ def image_size(data):
     return None
 
 
-class OverlayRenderer:
-    """Server-side worker: renders logged overlay items into PNG
-    ``image_overlay`` items off the ZMQ callback thread.
+def _isolate_worker(avoid_cpus, niceness):
+    """Render process: run on the CPUs the server is NOT pinned to (serve.sh
+    pins it with taskset, which a child would inherit) and at a lower
+    priority, so rendering competes neither with the relaying nor with the
+    control loops on the machine."""
+    import os
+    try:
+        cpus = set(range(os.cpu_count() or 1)) - set(avoid_cpus or ())
+        if cpus:
+            os.sched_setaffinity(0, cpus)
+    except (AttributeError, OSError):
+        pass
+    if niceness:
+        try:
+            os.nice(int(niceness))
+        except (AttributeError, OSError):
+            pass
 
-    ``send(items)`` is called with a list holding one rendered item. Image
-    sizes come from the overlay itself or from ``note_image_size`` (fed with
-    the sizes of relayed images); an overlay whose size is not known yet waits
-    up to ``wait_size_s`` for its image, then is dropped.
-    """
 
-    def __init__(self, send, max_queue=64, wait_size_s=2.0):
-        import collections
-        import threading
-        self.send = send
-        self.wait_size_s = wait_size_s
-        self.sizes = {}                         # (session, name) -> (w, h)
-        self._queue = collections.deque(maxlen=max_queue)
-        self._pending = []                      # (t_received, item) waiting for a size
-        self._cv = threading.Condition()
-        self.dropped = 0
-        self.rendered = 0
-        self.render_s = 0.0
-        self._stop = False
-        self._warned = set()
-        self._thread = threading.Thread(target=self._run, name='overlay-render', daemon=True)
-        self._thread.start()
+def _render_worker(in_q, out_q, wait_size_s, avoid_cpus, niceness):
+    """Body of the overlay render process (see OverlayRenderer).
 
-    def note_image_size(self, session, name, size):
-        if size is not None:
-            self.sizes[(session, name)] = (int(size[0]), int(size[1]))
+    Reads ``('size', (session, name), (w, h))`` and ``('render', item)``
+    messages from ``in_q``; writes ``('rendered', image_overlay_item,
+    render_s)`` and ``('dropped', 1)`` to ``out_q``. ``None`` stops it."""
+    import queue
+    import time
 
-    def submit(self, items):
-        with self._cv:
-            for it in items:
-                if len(self._queue) == self._queue.maxlen:
-                    self.dropped += 1
-                self._queue.append(it)
-            self._cv.notify()
+    _isolate_worker(avoid_cpus, niceness)
 
-    def stop(self):
-        with self._cv:
-            self._stop = True
-            self._cv.notify()
+    sizes = {}                  # (session, name) -> (w, h)
+    pending = []                # (t_received, item) waiting for a size
+    warned = set()
 
-    def _size_for(self, it):
+    def size_for(it):
         if it.get('size'):
             return it['size']
-        return self.sizes.get((it.get('session'), it.get('name')))
+        return sizes.get((it.get('session'), it.get('name')))
 
-    def _run(self):
-        import time
+    while True:
+        # Block for the next message; with overlays waiting for a size, wake
+        # up regularly to expire them.
+        try:
+            msgs = [in_q.get(timeout=0.1 if pending else None)]
+        except queue.Empty:
+            msgs = []
+        # Take everything queued, so size updates in the batch apply before
+        # the overlays rendered from it.
         while True:
-            with self._cv:
-                while not self._queue and not self._stop:
-                    self._cv.wait(timeout=0.1 if self._pending else None)
-                    if self._pending:
-                        break
+            try:
+                msgs.append(in_q.get_nowait())
+            except queue.Empty:
+                break
+
+        now = time.monotonic()
+        batch = []
+        for msg in msgs:
+            if msg is None:
+                out_q.put(None)
+                return
+            if msg[0] == 'size':
+                sizes[msg[1]] = msg[2]
+            elif msg[0] == 'render':
+                batch.append((now, msg[1]))
+
+        waiting, pending = pending, []
+        for t_recv, it in waiting + batch:
+            size = size_for(it)
+            if size is None:
+                if now - t_recv < wait_size_s:
+                    pending.append((t_recv, it))
+                else:
+                    out_q.put(('dropped', 1))
+                    key = (it.get('session'), it.get('name'))
+                    if key not in warned:
+                        warned.add(key)
+                        print(f"[overlay] no image size known for {key}; "
+                              f"dropping overlays (pass size= to log_overlay)", flush=True)
+                continue
+            try:
+                tic = time.perf_counter()
+                png, offset = render_overlay(it.get('items') or [], size)
+                render_s = time.perf_counter() - tic
+                out_q.put(('rendered', {
+                    'type': 'image_overlay',
+                    'time': it.get('time'),
+                    'name': it.get('name'),
+                    'number': it.get('number'),
+                    'overlay': it.get('overlay'),
+                    'session': it.get('session'),
+                    'size': list(size),
+                    'offset': list(offset),
+                    'payload': png,
+                }, render_s))
+            except Exception as e:
+                out_q.put(('dropped', 1))
+                print(f"[overlay] render failed for {it.get('name')}/{it.get('overlay')}: {e}",
+                      flush=True)
+
+
+class OverlayRenderer:
+    """Server-side overlay rendering in a separate Python process, so it
+    shares neither the GIL nor the server's CPU core with the relaying.
+
+    ``submit(items)`` queues logged overlay items as render instructions for
+    the render process (a bounded queue of ``max_queue`` messages). When the
+    queue is full, the NEW items are dropped (counted in ``dropped_full``),
+    so a render backlog never grows and what is queued keeps its order.
+
+    ``send(items)`` is called, from a reader thread, with a list holding one
+    rendered ``image_overlay`` item. Image sizes come from the overlay itself
+    or from ``note_image_size`` (fed with the sizes of relayed images; only
+    changes are forwarded to the render process); an overlay whose size is
+    not known yet waits up to ``wait_size_s`` for its image, then is dropped.
+
+    The render process runs on the CPUs the server is not pinned to, at
+    ``niceness`` (added to the server's).
+
+    Stats (reset by the caller as it likes): ``rendered``, ``render_s``
+    (render time spent in the process), ``dropped`` (all drops, including
+    ``dropped_full``).
+    """
+
+    def __init__(self, send, max_queue=64, wait_size_s=2.0, niceness=10):
+        import multiprocessing as mp
+        import os
+        import threading
+        self.send = send
+        self.dropped = 0
+        self.dropped_full = 0
+        self.rendered = 0
+        self.render_s = 0.0
+        self._sizes_sent = {}                   # (session, name) -> (w, h) forwarded
+        self._stop = False
+        self._warned_dead = False
+        try:
+            avoid_cpus = sorted(os.sched_getaffinity(0))
+        except AttributeError:                  # not Linux
+            avoid_cpus = []
+        # spawn, not fork: the server is multi-threaded (ZMQ, websocket
+        # threads), and forking a threaded process can deadlock the child.
+        ctx = mp.get_context('spawn')
+        self._in = ctx.Queue(maxsize=max_queue)
+        self._out = ctx.Queue()
+        self._proc = ctx.Process(
+            target=_render_worker, name='overlay-render', daemon=True,
+            args=(self._in, self._out, wait_size_s, avoid_cpus, niceness))
+        self._proc.start()
+        self._reader = threading.Thread(target=self._read_results,
+                                        name='overlay-results', daemon=True)
+        self._reader.start()
+
+    def _put(self, msg):
+        """Queue a message for the render process; False if the queue is full
+        (or the process is gone)."""
+        import queue
+        if self._stop or not self._proc.is_alive():
+            return False
+        try:
+            self._in.put_nowait(msg)
+            return True
+        except queue.Full:
+            return False
+
+    def note_image_size(self, session, name, size):
+        if size is None:
+            return
+        key, size = (session, name), (int(size[0]), int(size[1]))
+        if self._sizes_sent.get(key) == size:
+            return
+        # Remembered only once queued: a size lost to a full queue is
+        # resent with the next image.
+        if self._put(('size', key, size)):
+            self._sizes_sent[key] = size
+
+    def submit(self, items):
+        for it in items:
+            if not self._put(('render', it)):
+                self.dropped += 1
+                self.dropped_full += 1
+
+    def _read_results(self):
+        import queue
+        while True:
+            try:
+                msg = self._out.get(timeout=0.5)
+            except queue.Empty:
                 if self._stop:
                     return
-                batch = list(self._queue)
-                self._queue.clear()
-
-            now = time.monotonic()
-            waiting, self._pending = self._pending, []
-            for t_recv, it in waiting + [(now, it) for it in batch]:
-                size = self._size_for(it)
-                if size is None:
-                    if now - t_recv < self.wait_size_s:
-                        self._pending.append((t_recv, it))
-                    else:
-                        self.dropped += 1
-                        key = (it.get('session'), it.get('name'))
-                        if key not in self._warned:
-                            self._warned.add(key)
-                            print(f"[overlay] no image size known for {key}; "
-                                  f"dropping overlays (pass size= to log_overlay)")
-                    continue
+                if not self._proc.is_alive() and not self._warned_dead:
+                    self._warned_dead = True
+                    print(f"[overlay] render process exited (code {self._proc.exitcode}); "
+                          f"overlays are dropped from now on")
+                continue
+            except (EOFError, OSError):
+                return
+            if msg is None:
+                return
+            if msg[0] == 'rendered':
+                self.rendered += 1
+                self.render_s += msg[2]
                 try:
-                    tic = time.perf_counter()
-                    png, offset = render_overlay(it.get('items') or [], size)
-                    self.render_s += time.perf_counter() - tic
-                    self.rendered += 1
-                    self.send([{
-                        'type': 'image_overlay',
-                        'time': it.get('time'),
-                        'name': it.get('name'),
-                        'number': it.get('number'),
-                        'overlay': it.get('overlay'),
-                        'session': it.get('session'),
-                        'size': list(size),
-                        'offset': list(offset),
-                        'payload': png,
-                    }])
+                    self.send([msg[1]])
                 except Exception as e:
-                    self.dropped += 1
-                    print(f"[overlay] render failed for {it.get('name')}/{it.get('overlay')}: {e}")
+                    print(f"[overlay] send failed: {e}")
+            elif msg[0] == 'dropped':
+                self.dropped += msg[1]
+
+    def stop(self, timeout_s=2.0):
+        """Stop the render process (queued overlays are not rendered)."""
+        import queue
+        self._stop = True
+        try:
+            self._in.put(None, timeout=timeout_s)
+        except (queue.Full, ValueError, OSError):
+            pass
+        self._proc.join(timeout_s)
+        if self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(timeout_s)
+        self._reader.join(timeout_s)
+        # The queues' feeder threads must not block interpreter exit on data
+        # the stopped process will never read.
+        self._in.cancel_join_thread()
