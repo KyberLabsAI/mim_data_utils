@@ -8,6 +8,12 @@ server sends that to the viewer, which composites it over the image frame with
 the same number.
 
 Coordinates are image pixels (floats are fine), colors RGB or RGBA 0-255.
+
+Static overlays (``log_overlay(..., static=True)``) belong to no frame: the
+viewer draws the newest one of an overlay name over every frame of its image
+source. The server renders and relays each version once (`StaticOverlayCache`
+drops unchanged repeats) and replays the current ones to viewers and
+recordings that start later.
 """
 
 import io
@@ -353,12 +359,17 @@ def _isolate_worker(avoid_cpus, niceness):
             pass
 
 
+def _item_ref(it):
+    """The identifying fields of an overlay item (for drop reports)."""
+    return {k: it.get(k) for k in ('session', 'name', 'overlay', 'static')}
+
+
 def _render_worker(in_q, out_q, wait_size_s, avoid_cpus, niceness):
     """Body of the overlay render process (see OverlayRenderer).
 
     Reads ``('size', (session, name), (w, h))`` and ``('render', item)``
     messages from ``in_q``; writes ``('rendered', image_overlay_item,
-    render_s)`` and ``('dropped', 1)`` to ``out_q``. ``None`` stops it."""
+    render_s)`` and ``('dropped', 1, item_ref)`` to ``out_q``. ``None`` stops it."""
     import queue
     import time
 
@@ -406,7 +417,7 @@ def _render_worker(in_q, out_q, wait_size_s, avoid_cpus, niceness):
                 if now - t_recv < wait_size_s:
                     pending.append((t_recv, it))
                 else:
-                    out_q.put(('dropped', 1))
+                    out_q.put(('dropped', 1, _item_ref(it)))
                     key = (it.get('session'), it.get('name'))
                     if key not in warned:
                         warned.add(key)
@@ -427,9 +438,10 @@ def _render_worker(in_q, out_q, wait_size_s, avoid_cpus, niceness):
                     'size': list(size),
                     'offset': list(offset),
                     'payload': png,
+                    'static': bool(it.get('static')),
                 }, render_s))
             except Exception as e:
-                out_q.put(('dropped', 1))
+                out_q.put(('dropped', 1, _item_ref(it)))
                 print(f"[overlay] render failed for {it.get('name')}/{it.get('overlay')}: {e}",
                       flush=True)
 
@@ -444,7 +456,9 @@ class OverlayRenderer:
     so a render backlog never grows and what is queued keeps its order.
 
     ``send(items)`` is called, from a reader thread, with a list holding one
-    rendered ``image_overlay`` item. Image sizes come from the overlay itself
+    rendered ``image_overlay`` item. ``on_drop(item)`` (optional) is called
+    with each overlay that is not rendered (only its session / name /
+    overlay / static fields for drops in the render process). Image sizes come from the overlay itself
     or from ``note_image_size`` (fed with the sizes of relayed images; only
     changes are forwarded to the render process); an overlay whose size is
     not known yet waits up to ``wait_size_s`` for its image, then is dropped.
@@ -457,11 +471,12 @@ class OverlayRenderer:
     ``dropped_full``).
     """
 
-    def __init__(self, send, max_queue=64, wait_size_s=2.0, niceness=10):
+    def __init__(self, send, max_queue=64, wait_size_s=2.0, niceness=10, on_drop=None):
         import multiprocessing as mp
         import os
         import threading
         self.send = send
+        self.on_drop = on_drop
         self.dropped = 0
         self.dropped_full = 0
         self.rendered = 0
@@ -514,6 +529,14 @@ class OverlayRenderer:
             if not self._put(('render', it)):
                 self.dropped += 1
                 self.dropped_full += 1
+                self._notify_drop(it)
+
+    def _notify_drop(self, item):
+        if self.on_drop is not None:
+            try:
+                self.on_drop(item)
+            except Exception as e:
+                print(f"[overlay] on_drop failed: {e}")
 
     def _read_results(self):
         import queue
@@ -541,6 +564,8 @@ class OverlayRenderer:
                     print(f"[overlay] send failed: {e}")
             elif msg[0] == 'dropped':
                 self.dropped += msg[1]
+                if len(msg) > 2 and msg[2] is not None:
+                    self._notify_drop(msg[2])
 
     def stop(self, timeout_s=2.0):
         """Stop the render process (queued overlays are not rendered)."""
@@ -558,3 +583,61 @@ class OverlayRenderer:
         # The queues' feeder threads must not block interpreter exit on data
         # the stopped process will never read.
         self._in.cancel_join_thread()
+
+
+class StaticOverlayCache:
+    """Server side of the static overlays (``log_overlay(..., static=True)``),
+    keyed by (session, image source, overlay name).
+
+    ``is_new(item)`` tells whether a logged static overlay differs from the
+    last one of its key (same items and size: a repeat, not rendered or sent
+    again); ``forget(item)`` undoes that for an overlay that was not rendered,
+    so the next repeat is. ``rendered(item)`` keeps the newest rendered
+    version, which ``snapshot()`` replays to viewers connecting later and to
+    new recordings. ``clear_session`` drops a session's entries (producer
+    relaunch, eviction). Thread-safe.
+    """
+
+    def __init__(self):
+        import threading
+        self._lock = threading.Lock()
+        self._sig = {}          # key -> packed (items, size) last accepted
+        self._last = {}         # key -> rendered image_overlay item
+
+    @staticmethod
+    def key(item, session=None):
+        return (item.get('session') or session, item.get('name'), item.get('overlay'))
+
+    @staticmethod
+    def is_static(item):
+        return bool(item.get('static'))
+
+    def is_new(self, item, session=None):
+        import ormsgpack
+        key = self.key(item, session)
+        sig = ormsgpack.packb([item.get('items') or [], item.get('size')],
+                              option=ormsgpack.OPT_SERIALIZE_NUMPY)
+        with self._lock:
+            if self._sig.get(key) == sig:
+                return False
+            self._sig[key] = sig
+            return True
+
+    def forget(self, item, session=None):
+        with self._lock:
+            self._sig.pop(self.key(item, session), None)
+
+    def rendered(self, item):
+        with self._lock:
+            self._last[self.key(item)] = item
+
+    def snapshot(self, session=None):
+        """Rendered static overlays (of ``session`` only, if given)."""
+        with self._lock:
+            return [it for k, it in self._last.items() if session is None or k[0] == session]
+
+    def clear_session(self, session):
+        with self._lock:
+            for d in (self._sig, self._last):
+                for k in [k for k in d if k[0] == session]:
+                    del d[k]

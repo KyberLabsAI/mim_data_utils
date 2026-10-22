@@ -79,6 +79,32 @@ overlay images. Overlays are not drawn while a camera plays back from video
 segments. Overlays are recorded like
 images (with `embed_video`).
 
+### Static overlays
+
+`static=True` makes an overlay that belongs to no frame: the viewer draws it
+over every frame of the camera, from its time on, until a new static overlay
+with the same name replaces it (scrubbing back shows the version valid then).
+A wireframe of a tracked object, for example:
+
+```python
+from kyber_utils.draw_image_3d import DrawImage3D
+
+ov = Overlay()
+DrawImage3D(camera).set_overlay(ov).draw_wireframe(
+    'cup.stl', pose=T_cam_obj, scale=1e-3,           # mesh file in mm, cached per file
+    edge_color=(0, 255, 255, 180), vertex_color=(255, 0, 0),
+    edge_width=1, vertex_radius=2)
+logger.log_overlay(t, 'cam', None, 'cup', ov, static=True)
+```
+
+Each version is rendered and sent once: calling this every tick with the same
+drawing sends nothing new (the Logger repeats an unchanged one every 5 s, which
+the server drops if it has it already), and the viewer decodes each version's
+PNG once. Static overlays go at a higher priority than camera frames, so
+backpressure doesn't drop them. The server keeps the current one per overlay
+and sends it to viewers that connect later (page reload) and at the start of
+every recording and snapshot.
+
 ## Recording
 
 Recordings are written by the server process (`serve.sh`): every message it

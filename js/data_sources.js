@@ -298,10 +298,11 @@ function parsewebSocketData(data) {
         }
     } else if (data.type == 'image_overlay') {
         // Rendered overlay PNG (Logger.log_overlay) for one frame of image
-        // source data.name; payload is null for an empty overlay.
+        // source data.name, or a static one for all its frames from data.time
+        // on; payload is null for an empty overlay.
         let cam = getOrCreateCamera(sd, data.name || 'default');
         cam.addOverlay(data.overlay || 'overlay', data.number, parseFloat(data.time),
-                       data.payload, data.offset);
+                       data.payload, data.offset, !!data.static);
     } else if (data.type == 'video_segment') {
         let cam = getOrCreateCamera(sd, data.name || 'default');
         cam.addVideoSegment(data);

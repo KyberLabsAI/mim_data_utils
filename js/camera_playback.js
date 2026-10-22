@@ -107,8 +107,9 @@ class CameraPlayback {
         this.imageStore.addFrame(time, payload, number);
     }
 
-    addOverlay(overlayName, number, time, payload, offset) {
-        this.overlays.add(overlayName, number, time, payload, offset);
+    addOverlay(overlayName, number, time, payload, offset, isStatic) {
+        if (isStatic) this.overlays.addStatic(overlayName, time, payload, offset);
+        else this.overlays.add(overlayName, number, time, payload, offset);
         if (!this.overlayViews.has(overlayName)) {
             const view = new OverlayView(this, overlayName);
             this.overlayViews.set(overlayName, view);
@@ -227,13 +228,16 @@ class OverlayView {
             // Only the newest request is ever delivered (stale decodes are
             // dropped), so the frame drawn is the one requested last.
             this.shownKey = this._requestedKey;
+            this.shownTime = this._requestedTime;
         });
         this.container = panel.container;
         this.container.classList.add('overlay-panel');
         this.canvasEl = panel.canvas;
         this.decoder = panel.decoder;
         this.shownKey = null;        // OverlayStore.frameKey of the drawn frame
+        this.shownTime = null;       // and its time (picks a static overlay's version)
         this._requestedKey = null;
+        this._requestedTime = null;
 
         // The overlay goes on a transparent canvas of the image's pixel size
         // stacked over the image canvas; both are scaled by the same CSS
@@ -243,7 +247,7 @@ class OverlayView {
         this.overlayCtx = this.overlayEl.getContext('2d');
         this.container.appendChild(this.overlayEl);
         this._overlaySig = null;
-        this._bitmap = null;         // {key, bitmap, failed} of the shown frame
+        this._bitmap = null;         // {key, bitmap, failed} of the shown overlay PNG
 
         // Live picture-in-picture: own decoder and canvas.
         this.liveMode = 'none';
@@ -288,18 +292,23 @@ class OverlayView {
     /**
      * Show the newest frame at or before `absTime` that has this overlay
      * (falling back to the plain frame) with the overlay over it; `liveMode`
-     * adds the frame at `absTime` in a corner.
+     * adds the frame at `absTime` in a corner. A static overlay is on every
+     * frame: it shows the frame at `absTime` with the version valid then.
      */
     sync(absTime, liveMode) {
         const src = this.source;
         const t = absTime;
         const name = this.overlayName;
-        let frame = src.imageStore.findFrameAtOrBefore(t, (number, time) =>
-            src.overlays.get(name, OverlayStore.frameKey(number, time)) !== undefined,
-            OVERLAY_FRAME_MAX_AGE_S);
+        let frame = null;
+        if (!src.overlays.isStatic(name)) {
+            frame = src.imageStore.findFrameAtOrBefore(t, (number, time) =>
+                src.overlays.get(name, OverlayStore.frameKey(number, time)) !== undefined,
+                OVERLAY_FRAME_MAX_AGE_S);
+        }
         if (!frame) frame = src.imageStore.getFrameAtTime(t);
         if (frame) {
             this._requestedKey = OverlayStore.frameKey(frame.number, frame.time);
+            this._requestedTime = frame.time;
             this.decoder.request(frame.time, frame.bytes);
         }
         this._syncOverlay();
@@ -307,10 +316,19 @@ class OverlayView {
     }
 
     /** Draw the overlay of the shown frame; the previous drawing stays until
-     *  the new PNG is decoded (no blank frames). */
+     *  the new PNG is decoded (no blank frames). A static overlay's PNG is
+     *  decoded once per version and kept while the frames change. */
     _syncOverlay() {
-        const key = this.shownKey;
-        const entry = key == null ? undefined : this.source.overlays.get(this.overlayName, key);
+        const overlays = this.source.overlays;
+        let key, entry;
+        if (overlays.isStatic(this.overlayName)) {
+            entry = this.shownKey == null ? undefined
+                : overlays.getStatic(this.overlayName, this.shownTime);
+            key = entry ? 's' + entry.id : null;
+        } else {
+            key = this.shownKey;
+            entry = key == null ? undefined : overlays.get(this.overlayName, key);
+        }
         const w = this.canvasEl.width, h = this.canvasEl.height;
         const sig = `${key}|${entry ? 1 : 0}|${w}x${h}`;
         if (sig === this._overlaySig) return;
@@ -404,6 +422,7 @@ class OverlayView {
         if (this._bitmap && this._bitmap.bitmap) this._bitmap.bitmap.close();
         this._bitmap = null;
         this.shownKey = this._requestedKey = this._overlaySig = null;
+        this.shownTime = this._requestedTime = null;
         this.overlayCtx.clearRect(0, 0, this.overlayEl.width, this.overlayEl.height);
         this.liveCtx.clearRect(0, 0, this.liveCanvas.width, this.liveCanvas.height);
         this._toolbarSig = null;

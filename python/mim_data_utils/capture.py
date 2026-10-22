@@ -253,6 +253,7 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None,
 
     frames = {}      # camera -> [(key, payload, in_window)] in arrival order
     overlays = {}    # camera -> {key: {overlay name: {payload, offset}}}
+    statics = {}     # camera -> {overlay name: {payload, offset}}, the newest static overlay
     t_start = time.monotonic()
     deadline = t_start + duration
     try:
@@ -301,6 +302,12 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None,
                     if not average and not in_window and safe not in overlays:
                         continue
                     frames.setdefault(safe, []).append((key, bytes(payload), in_window))
+                elif kind == 'image_overlay' and _field(item, 'static'):
+                    # On every frame; the server replays the current ones on
+                    # connect, so they never extend the wait.
+                    statics.setdefault(safe, {})[_field(item, 'overlay') or 'overlay'] = {
+                        'payload': _field(item, 'payload'),
+                        'offset': _field(item, 'offset')}
                 elif kind == 'image_overlay':
                     overlays.setdefault(safe, {}).setdefault(key, {})[
                         _field(item, 'overlay') or 'overlay'] = {
@@ -366,6 +373,17 @@ def capture_ws(prefix, out_dir, host, port, duration=0.2, average=None,
                                               cam_ovs[key][name])
             except Exception as e:
                 print(f'[capture] {safe}: overlay {name!r} export failed ({e})')
+
+        # Static overlays apply to every frame: drawn over the saved image.
+        for name, ov in sorted(statics.get(safe, {}).items()):
+            if name in _overlay_names(cam_ovs):
+                continue
+            try:
+                base = img if average else cv2.imdecode(
+                    np.frombuffer(payload, np.uint8), cv2.IMREAD_UNCHANGED)
+                saved += _write_overlay_image(prefix, out_dir, safe, name, base, ov)
+            except Exception as e:
+                print(f'[capture] {safe}: static overlay {name!r} export failed ({e})')
     return saved
 
 

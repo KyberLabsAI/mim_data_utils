@@ -774,6 +774,9 @@ class Logger(threading.Thread):
         # Per-dict cache of the loggable-key classification, see _log_dict().
         self._log_dict_cache = {}
         self.flush_stats = self._new_flush_stats()
+        # Static overlays (log_overlay(static=True)): (img_topic, name) ->
+        # (packed items + size, monotonic send time) of the last one sent.
+        self._static_overlays = {}
 
         # Launching a session announces it to the server (registering it in
         # the live-session list, evicting the stalest one if there are more
@@ -872,6 +875,8 @@ class Logger(threading.Thread):
         # Goes through the '/setup/' channel: the server unpacks setup items,
         # so it sees the launch, (re)registers the session, clears the
         # session's cached setups and tells the viewers to start it fresh.
+        # Static overlays are cleared with it, so send them again.
+        self._static_overlays = {}
         self._append_log({
             'type': 'setup',
             'op': 'launch',
@@ -1222,7 +1227,12 @@ class Logger(threading.Thread):
         b64 = base64.b64encode(data).decode('ascii')
         return f'![{alt}](data:image/{mime};base64,{b64})'
 
-    def log_overlay(self, time_s, img_topic, img_number, overlay_name, overlay, size=None):
+    # An unchanged static overlay is resent after this long, so a restarted
+    # server gets it again (the server drops the repeats it already has).
+    STATIC_OVERLAY_RESEND_S = 5.0
+
+    def log_overlay(self, time_s, img_topic, img_number, overlay_name, overlay, size=None,
+                    static=False):
         """Log a vector overlay for the frame ``img_number`` of the image topic
         ``img_topic`` (see log_image(..., number=)). ``overlay`` is an
         ``Overlay`` (text, rect, lines, circle) or a list of its item dicts,
@@ -1232,16 +1242,46 @@ class Logger(threading.Thread):
         viewer composites it over that frame and can toggle each overlay name
         per image source. ``size`` = (w, h) of the image; defaults to the size
         the server last saw on ``img_topic``. With ``img_number=None`` the
-        overlay matches the frame logged at exactly ``time_s``."""
-        self._append_log({
+        overlay matches the frame logged at exactly ``time_s``.
+
+        ``static=True``: the overlay is drawn over every frame of
+        ``img_topic`` from ``time_s`` on, until a new static overlay of the
+        same name replaces it (``img_number`` is ignored). It is rendered and
+        sent to the viewer once per change: calling this every tick with the
+        same drawing sends nothing new (an unchanged one is resent every
+        STATIC_OVERLAY_RESEND_S for a restarted server, which drops it if it
+        has it already). Viewers connecting later get the current one.
+
+        Example, a mesh wireframe that stays on the image::
+
+            ov = Overlay()
+            DrawImage3D(cam).set_overlay(ov).draw_wireframe(
+                'cup.stl', pose=T_cam_obj, scale=1e-3, edge_color=(0, 255, 255, 180),
+                vertex_color=(255, 0, 0), edge_width=1, vertex_radius=2)
+            logger.log_overlay(t, 'innomaker_u20cam_720p', None, 'cup', ov, static=True)
+        """
+        items = overlay_items(overlay)
+        size = None if size is None else [int(size[0]), int(size[1])]
+        if static:
+            key = (img_topic, overlay_name)
+            sig = ormsgpack.packb([items, size], option=ormsgpack.OPT_SERIALIZE_NUMPY)
+            now = time.monotonic()
+            last = self._static_overlays.get(key)
+            if last is not None and last[0] == sig and now - last[1] < self.STATIC_OVERLAY_RESEND_S:
+                return
+            self._static_overlays[key] = (sig, now)
+        item = {
             'type': 'overlay',
             'time': time_s,
             'name': img_topic,
-            'number': None if img_number is None else int(img_number),
+            'number': None if (static or img_number is None) else int(img_number),
             'overlay': overlay_name,
-            'items': overlay_items(overlay),
-            'size': None if size is None else [int(size[0]), int(size[1])],
-        })
+            'items': items,
+            'size': size,
+        }
+        if static:
+            item['static'] = True
+        self._append_log(item)
 
     def log_md(self, time_s, markdown):
         """Log a text message, rendered as markdown in the viewer's "m" panel

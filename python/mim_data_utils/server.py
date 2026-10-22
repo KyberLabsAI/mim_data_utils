@@ -14,12 +14,12 @@ from kyber_utils.zeromq import (
 try:
     from mim_data_utils.logger import resolve_shm_items, pack_sample_batch
     from mim_data_utils.recorder import RecordingManager, serve_rpc
-    from mim_data_utils.overlay import OverlayRenderer
+    from mim_data_utils.overlay import OverlayRenderer, StaticOverlayCache
 except ImportError:
     # server.py can be run as a plain script from the package directory.
     from logger import resolve_shm_items, pack_sample_batch
     from recorder import RecordingManager, serve_rpc
-    from overlay import OverlayRenderer
+    from overlay import OverlayRenderer, StaticOverlayCache
 
 class SessionTracker:
     """Live-session bookkeeping: which sessions exist and when each last saw data.
@@ -194,6 +194,9 @@ class BinaryWebSocketServer(threading.Thread):
         # Registered setups replayed to every client on connect, for every
         # session the tracker reports live.
         self.setup_registry = setup_registry
+        # StaticOverlayCache: the current static overlays, replayed with the
+        # setups (set in run()).
+        self.static_overlays = None
         self.session_tracker = session_tracker
         # RecordingManager: every message sent to the viewers also goes into
         # the active recordings (set in run()).
@@ -264,8 +267,23 @@ class BinaryWebSocketServer(threading.Thread):
                 client.sendMessage(snapshot)
                 print(f"[setup] replayed '{name}' setups to "
                       f"{getattr(client, 'address', client)}")
+
+            for msg in self.static_overlay_messages():
+                client.sendMessage(msg)
         except Exception:
             traceback.print_exc()
+
+    def static_overlay_messages(self):
+        """The live sessions' current static overlays, one packed message
+        per session (none without any)."""
+        if self.static_overlays is None or self.session_tracker is None:
+            return []
+        msgs = []
+        for name in self.session_tracker.snapshot():
+            items = self.static_overlays.snapshot(name)
+            if items:
+                msgs.append(ormsgpack.packb(items, option=ormsgpack.OPT_SERIALIZE_NUMPY))
+        return msgs
 
     def broadcast(self, data: bytes, priority='timeseries'):
         """Send binary data to all clients, dropping for slow ones by priority.
@@ -372,18 +390,21 @@ def run():
     WebsocketHandlerPubSub.value_server = value_server
 
     setup_registry = SetupRegistry()
+    static_overlays = StaticOverlayCache()
     session_tracker = SessionTracker()
 
     websocket = BinaryWebSocketServer(
         WebsocketHandlerPubSub, host='127.0.0.1', port=5678,
         setup_registry=setup_registry,
         session_tracker=session_tracker)
+    websocket.static_overlays = static_overlays
 
     def on_sessions_change(evicted):
         # An evicted session's cached setups go with it; its data already in
         # the viewers stays (the viewer greys the session out).
         for name in evicted:
             setup_registry.clear_session(name)
+            static_overlays.clear_session(name)
             print(f"[session] evicted: {name}")
         websocket.broadcast_sessions()
 
@@ -396,6 +417,7 @@ def run():
         msgs = [websocket.sessions_message()]
         for name in session_tracker.snapshot():
             msgs.append(setup_registry.snapshot(name))
+        msgs.extend(websocket.static_overlay_messages())
         return [m for m in msgs if m is not None]
 
     recordings = RecordingManager(header_fn=recording_header, port=5678)
@@ -425,10 +447,27 @@ def run():
     # shared with the relaying; new overlays are dropped while its queue is
     # full) and relayed like camera frames (same backpressure priority, also
     # fed to recordings).
-    overlay_renderer = OverlayRenderer(
-        lambda items: websocket.broadcast(
+    #
+    # Static overlays are rendered and relayed once per change (unchanged
+    # repeats are dropped here), so they go at timeseries priority, which
+    # backpressure sheds last: a viewer that misses one would not get it
+    # again. The newest one per overlay is replayed to viewers connecting
+    # later and to new recordings.
+    def send_overlays(items):
+        static = False
+        for it in items:
+            if StaticOverlayCache.is_static(it):
+                static_overlays.rendered(it)
+                static = True
+        websocket.broadcast(
             ormsgpack.packb(items, option=ormsgpack.OPT_SERIALIZE_NUMPY),
-            priority='camera'))
+            priority='timeseries' if static else 'camera')
+
+    def on_overlay_dropped(item):
+        if StaticOverlayCache.is_static(item):
+            static_overlays.forget(item)   # rendered on its next repeat
+
+    overlay_renderer = OverlayRenderer(send_overlays, on_drop=on_overlay_dropped)
     _overlay_last_print = [time.time()]
 
     def on_overlay(topic, data):
@@ -440,7 +479,13 @@ def run():
             items = ormsgpack.unpackb(data)
         except Exception:
             return
-        overlay_renderer.submit([it for it in items if isinstance(it, dict)])
+        items = [it for it in items if isinstance(it, dict)]
+        for it in items:
+            if not it.get('session'):
+                it['session'] = session
+        overlay_renderer.submit([
+            it for it in items
+            if (not StaticOverlayCache.is_static(it) or static_overlays.is_new(it, session))])
 
         now = time.time()
         if now - _overlay_last_print[0] >= 10.0 and overlay_renderer.rendered:
@@ -541,6 +586,7 @@ def run():
                 # session's data and switch to it.
                 name = item.get('session') or 'Default'
                 setup_registry.clear_session(name)
+                static_overlays.clear_session(name)
                 session_tracker.touch(name)
                 print(f"[session] launched: {name}")
                 changed.append(item)

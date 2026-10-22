@@ -128,3 +128,96 @@ def test_overlay_items_routed_to_overlay_topic():
     assert [i['type'] for i in sent['overlay']] == ['overlay']
     assert [i['type'] for i in sent['cam']] == ['image']
     assert [i['type'] for i in sent['ts']] == ['md']
+
+
+# --- static overlays ----------------------------------------------------------
+
+from mim_data_utils.overlay import StaticOverlayCache  # noqa: E402
+
+
+def _static(items, session='S', overlay='cup', size=(32, 24)):
+    return {'type': 'overlay', 'time': 1.0, 'name': 'cam', 'number': None, 'overlay': overlay,
+            'session': session, 'items': items, 'size': list(size), 'static': True}
+
+
+def test_logger_static_overlay_dedupe_and_resend():
+    from mim_data_utils.logger import Logger
+
+    class Stub:
+        STATIC_OVERLAY_RESEND_S = 0.2
+
+        def __init__(self):
+            self._static_overlays, self.out = {}, []
+
+        def _append_log(self, item):
+            self.out.append(item)
+
+    lg, ov = Stub(), Overlay().line((1, 1), (5, 5))
+    for _ in range(3):
+        Logger.log_overlay(lg, 1.0, 'cam', 12, 'cup', ov, static=True)
+    assert len(lg.out) == 1                       # unchanged repeats are not sent
+    assert lg.out[0]['static'] is True and lg.out[0]['number'] is None
+    Logger.log_overlay(lg, 2.0, 'cam', None, 'cup', Overlay().line((1, 1), (6, 5)), static=True)
+    assert len(lg.out) == 2                       # a change is
+    Logger.log_overlay(lg, 2.0, 'cam', None, 'other', ov, static=True)
+    assert len(lg.out) == 3                       # per overlay name
+    time.sleep(0.25)
+    Logger.log_overlay(lg, 3.0, 'cam', None, 'other', ov, static=True)
+    assert len(lg.out) == 4                       # heartbeat resend
+    # Per-frame overlays are never deduped and carry no static flag.
+    Logger.log_overlay(lg, 3.0, 'cam', 5, 'tags', ov)
+    Logger.log_overlay(lg, 3.0, 'cam', 5, 'tags', ov)
+    assert len(lg.out) == 6 and 'static' not in lg.out[-1] and lg.out[-1]['number'] == 5
+
+
+def test_static_overlay_cache():
+    c = StaticOverlayCache()
+    a, b = Overlay().line((1, 1), (5, 5)).items, Overlay().line((1, 1), (6, 5)).items
+    assert c.is_new(_static(a)) and not c.is_new(_static(a))
+    assert c.is_new(_static(a, size=(64, 48)))   # size is part of the content
+    assert c.is_new(_static(b)) and c.is_new(_static(a, session='T'))
+    c.forget(_static(b))
+    assert c.is_new(_static(b))                  # not rendered -> rendered on the repeat
+
+    c.rendered({'type': 'image_overlay', 'session': 'S', 'name': 'cam', 'overlay': 'cup', 'v': 1})
+    c.rendered({'type': 'image_overlay', 'session': 'S', 'name': 'cam', 'overlay': 'cup', 'v': 2})
+    c.rendered({'type': 'image_overlay', 'session': 'T', 'name': 'cam', 'overlay': 'cup', 'v': 3})
+    assert [it['v'] for it in c.snapshot('S')] == [2]       # newest version only
+    assert len(c.snapshot()) == 2
+    c.clear_session('S')
+    assert c.snapshot('S') == [] and c.is_new(_static(b))   # relaunch sends it again
+    assert [it['v'] for it in c.snapshot()] == [3]
+
+
+def test_renderer_static_flag_and_drop_callback():
+    sent, dropped = [], []
+    r = OverlayRenderer(sent.extend, on_drop=dropped.append, wait_size_s=0.1)
+    r.submit([_static(Overlay().line((1, 1), (5, 5)).items)])
+    r.submit([_static(Overlay().line((1, 1), (5, 5)).items, overlay='nosize', size=(0, 0)) | {'size': None}])
+    for _ in range(100):
+        if sent and dropped:
+            break
+        time.sleep(0.02)
+    r.stop()
+    assert sent[0]['static'] is True and sent[0]['number'] is None
+    # Dropped in the render process (no size): reported with its key fields.
+    assert dropped == [{'session': 'S', 'name': 'cam', 'overlay': 'nosize', 'static': True}]
+
+
+def test_server_replays_static_overlays():
+    from mim_data_utils.server import BinaryWebSocketServer
+    c = StaticOverlayCache()
+    c.rendered({'type': 'image_overlay', 'session': 'S', 'name': 'cam', 'overlay': 'cup',
+                'payload': b'\x89PNG', 'static': True})
+    c.rendered({'type': 'image_overlay', 'session': 'gone', 'name': 'cam', 'overlay': 'cup'})
+
+    class Tracker:
+        def snapshot(self):
+            return {'S': 1.0}
+
+    stub = type('Stub', (), {})()
+    stub.static_overlays, stub.session_tracker = c, Tracker()
+    msgs = BinaryWebSocketServer.static_overlay_messages(stub)
+    assert len(msgs) == 1                         # live sessions only
+    items = ormsgpack.unpackb(msgs[0])
+    assert items[0]['overlay'] == 'cup' and items[0]['payload'] == b'\x89PNG'
