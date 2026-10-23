@@ -13,6 +13,7 @@ from .logger import (
 
 from .recorder import Recorder
 from .overlay import Overlay, render_overlay
+from .trace_dump import load_mdutrace
 
 from .scene import RawMesh, Mesh, Scene
 try:

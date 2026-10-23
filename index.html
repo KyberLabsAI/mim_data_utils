@@ -375,6 +375,7 @@ body.layout-panel-open .panel-root {
         <button onclick="removeMark()">Remove Mark</button>
         <button onclick="stepBack()">t--</button>
         <button onclick="stepForward()">t++</button>
+        <button onclick="dumpTraces()" title="Download all time traces as .mdutrace.gz (mim_data_utils.load_mdutrace)">Dump traces</button>
         <span>Layout:</span>
         <select id="xlimDom">
           <option value="0.1">0.1 s</option>
@@ -430,12 +431,19 @@ body.layout-panel-open .panel-root {
     uniform mat2 u_viewport2pixel;
     uniform float u_aspectCorrection;
 
-    in vec2 lineCenter;
-    in vec2 lineTangential;
+    // One instance per line segment, from point p0 to p1, drawn as a
+    // 4-vertex triangle strip: vertices 0, 1 at p0, 2, 3 at p1, even ones on
+    // the -tangent side, odd ones on the +tangent side.
+    in vec2 p0;
+    in vec2 p1;
     out vec4 v_color;
 
     void main() {
       float lineWidth = 1.;
+
+      vec2 lineCenter = gl_VertexID < 2 ? p0 : p1;
+      float side = (gl_VertexID % 2 == 0) ? -1. : 1.;
+      vec2 lineTangential = side * vec2(-(p1.y - p0.y), p1.x - p0.x);
 
       mat2 transformTangential = mat2(u_transformCenter[1][1], 0, 0, u_transformCenter[0][0]);
       vec2 tangentialViewport = transformTangential * lineTangential;
@@ -467,6 +475,7 @@ body.layout-panel-open .panel-root {
   <script src="lib/OrbitControls.js"></script>
   <script src="lib/VRButton.js"></script>
   <script src="js/dialog.js"></script>
+  <script src="js/trace_export.js"></script>
   <script src="js/pako.js"></script>
   <script src="lib/msgpack.min.js"></script>
 

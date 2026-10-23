@@ -34,6 +34,32 @@ Note that clicking on the plot or zooming freezes the live-plotting. To resume t
 
 At this time, the plotter renders all data poins using the GPU.
 
+Memory: traces are stored in chunks of 1024 samples (float32 values, float64
+times). Once a chunk is full, a column whose values are all the same is kept as
+one number and identical time columns are shared between series (lossless;
+on a hand session about 4x less memory). Each plotted line keeps its points
+once more for the GPU (8 bytes per sample), freed as soon as no plot shows the
+line anymore. All plots draw their lines with one shared WebGL2 context
+(browsers drop the oldest beyond ~16 contexts), copied into each plot's 2D
+canvas. `traceMemory()` in the browser console prints what is held.
+
+## Dumping traces
+
+*Dump traces* (top bar) downloads every time trace the viewer currently holds
+(the in-memory window, not older data it has already dropped) as one
+gzip-compressed `traces_<time>.mdutrace.gz`, with a progress dialog while it
+collects and compresses. Images, overlays and static data are not included.
+
+```python
+from mim_data_utils import load_mdutrace
+
+traces = load_mdutrace('traces_....mdutrace.gz')
+t, cur = traces['current']      # t: (n,) float64 [s], cur: (n, dim) float32
+```
+
+`python -m mim_data_utils.trace_dump <file>` lists the series of a dump. The
+file layout is documented at the top of `js/trace_export.js`.
+
 ## Image overlays
 
 Debug drawings on camera images are logged as vector overlays instead of a

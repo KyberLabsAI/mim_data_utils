@@ -1,5 +1,4 @@
 let GL_ARRAY_BUFFER = 34962;
-let GL_ELEMENT_ARRAY_BUFFER = 34963;
 
 
 
@@ -54,8 +53,49 @@ class GLDrawer {
     }
 }
 
+/**
+ * The one WebGL2 context every plot draws its lines with. Browsers allow only
+ * a handful of live WebGL contexts (~16 in Chrome) and drop the oldest beyond
+ * that, so a context per plot made plots go blank on big layouts. Each plot
+ * draws into this offscreen canvas and copies the result into its own 2D
+ * canvas (Plot.draw). One context also means one GPU copy of a line shown in
+ * several plots.
+ */
+class SharedLineGL {
+    constructor() {
+        this.canvas = document.createElement('canvas');
+        this.canvas.addEventListener('webglcontextlost', e => e.preventDefault());
+        this.drawer = new GLDrawer(this.canvas, [0, 0, 0, 0]);
+        this.gl = this.drawer.gl;
+    }
+
+    /** Sizes the drawing buffer to `width` x `height` and clears it. */
+    begin(width, height) {
+        const gl = this.gl;
+        if (this.canvas.width !== width || this.canvas.height !== height) {
+            this.canvas.width = width;
+            this.canvas.height = height;
+        }
+        gl.viewport(0, 0, width, height);
+        gl.clearColor(0, 0, 0, 0);
+        // Depth too: plots are drawn one after the other into the same buffer.
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    }
+}
+
+let _sharedLineGL = null;
+
+/** The shared context, recreated if the GPU dropped it (driver reset). */
+function sharedLineGL() {
+    if (_sharedLineGL === null || _sharedLineGL.gl.isContextLost()) {
+        _sharedLineGL = new SharedLineGL();
+    }
+    return _sharedLineGL;
+}
+
 class GPUBufferHandler {
-    constructor(buffer, array_type, to_rel_entries) {
+    constructor(gl, buffer, array_type, to_rel_entries) {
+        this.gl = gl;
         this.buffer = buffer;
         this.array_type = array_type;
         this.to_rel_entries = to_rel_entries;
@@ -84,6 +124,13 @@ class GPUBufferHandler {
 
         return res;
     }
+
+    release() {
+        if (!this.gl.isContextLost()) {
+            this.gl.deleteBuffer(this.buffer);
+        }
+        this.buffer = null;
+    }
 }
 
 class GPUData {
@@ -97,117 +144,68 @@ class GPUData {
 
     bind(gl) {
         if (!this.buffer.has(gl)) {
-            this.buffer.set(gl, new GPUBufferHandler(gl.createBuffer(), this.array_type, this.to_rel_entries));
+            this.buffer.set(gl, new GPUBufferHandler(gl, gl.createBuffer(), this.array_type, this.to_rel_entries));
         }
 
         let res = this.buffer.get(gl).bindSync(gl, this.parent.dataVersion, this.parent.to, this.data);
         return res;
     }
+
+    /** Deletes the GPU copies in every context. */
+    release() {
+        this.buffer.forEach(handler => handler.release());
+        this.buffer.clear();
+    }
+
+    /** Drops the GPU copies of contexts that are gone (removed plots). */
+    pruneLostContexts() {
+        for (const [gl, handler] of this.buffer) {
+            if (gl.isContextLost()) {
+                this.buffer.delete(gl);
+            }
+        }
+    }
 }
 
-// Holds the Float32 array with points, margin and color. Also holds the buffers.
+// The points of one piece of a line: x (relative to LineData.timeOffset), y
+// as float32, 8 bytes per point. Drawn as one instanced quad per segment
+// (points i, i+1), built in the vertex shader -- no per-vertex copies.
 class LineChunck {
     constructor(size) {
-        this.points = 4 * size; // There are 4 entires per stored point.
-        this.lineCenter = new Float32Array(2 * this.points);
-        this.lineTangential = new Float32Array(2 * this.points);
-        this.indexBuffer = new Uint16Array(6 * size);
-
-        this.from = 0;
+        this.size = size;
+        this.points = new Float32Array(2 * size);
+        // Number of points; the GPU sync and the draw call use it as `to`.
         this.to = 0;
-        this.fromY = 0;
-        this.toY = 0;
-        this.lastPoint = null;
         this.dataVersion = 0;
-        this.indexBufferIdx = 0;
 
-        this.gpuLineCenter = new GPUData(this, this.lineCenter, GL_ARRAY_BUFFER, 2);
-        this.gpuLineTangential = new GPUData(this, this.lineTangential, GL_ARRAY_BUFFER, 2);
-        this.gpuIndexBuffer = new GPUData(this, this.indexBuffer, GL_ELEMENT_ARRAY_BUFFER, 6/4);
+        this.gpuPoints = new GPUData(this, this.points, GL_ARRAY_BUFFER, 2);
     }
 
-    getLineCenterY(i) {
-        return this.lineCenter[2 * i + 1];
-    }
-
-    addVertex(x, y, tx, ty) {
-        let to = this.to;
-        this.lineCenter[2 * to + 0] = x;
-        this.lineCenter[2 * to + 1] = y;
-        this.lineTangential[2 * to + 0] = tx;
-        this.lineTangential[2 * to + 1] = ty;
-
+    appendPoint(x, y) {
+        this.points[2 * this.to] = x;
+        this.points[2 * this.to + 1] = y;
         this.to += 1;
-    }
-
-    addIndex(indexBufferOffset, offset) {
-        this.indexBuffer[this.indexBufferIdx + indexBufferOffset] = this.to - 1 + offset;
-    }
-
-    appendPoint(x1, y1) {
-        if (y1 < this.fromY) {
-            this.fromY = y1;
-        } else if (y1 > this.toY) {
-            this.toY = y1;
-        }
-
-        if (this.lastPoint == null) {
-            this.lastPoint = {x: x1, y: y1};
-            return;
-        }
-        let x0 = this.lastPoint.x;
-        let y0 = this.lastPoint.y;
-
-        this.lastPoint.x = x1;
-        this.lastPoint.y = y1;
-
-        // The tangential directions with respect to the line from 0 to 1.
-        let tx = -(y1 - y0);
-        let ty = (x1 - x0);
-        // 1         3
-        //  +-------+
-        //  |   /   |
-        //  +-------+
-        // 2         4
-
-        let topBottom = true;
-
-        // We always add 4 vertices for a new line segment. This makes the
-        // corners draw nicely.
-        this.addVertex(x0, y0, -tx, -ty);
-        this.addVertex(x0, y0, tx, ty);
-        this.addVertex(x1, y1, -tx, -ty);
-        this.addVertex(x1, y1, tx, ty);
-
-        this.addIndex(0, -1);
-        this.addIndex(1, -0);
-        this.addIndex(2, -2);
-        this.addIndex(3, -3);
-        this.addIndex(4, -2);
-        this.addIndex(5, -1);
-
-        this.indexBufferIdx += 6;
-
         this.dataVersion++;
     }
 
-    shiftPoint() {
-        this.from += 4;
-        if (this.isEmpty()) {
-            this.lastPoint = null;
-        }
+    lastX() {
+        return this.points[2 * (this.to - 1)];
     }
 
     isEmpty() {
-        return this.from == this.to;
+        return this.to == 0;
     }
 
     capacity() {
-        return this.points - this.to;
+        return this.size - this.to;
     }
 
     isFull() {
         return this.capacity() == 0;
+    }
+
+    release() {
+        this.gpuPoints.release();
     }
 }
 
@@ -239,8 +237,24 @@ class LineData {
     }
 
     clear() {
+        if (this.chunks) {
+            this.release();
+        }
         this.chunks = [new LineChunck(this.chunkSize)]
         this.timeOffset = 0;
+    }
+
+    /** Deletes the GPU buffers of all chunks (the CPU side goes with GC). */
+    release() {
+        this.chunks.forEach(chunk => chunk.release());
+    }
+
+    pruneLostContexts() {
+        this.chunks.forEach(chunk => chunk.gpuPoints.pruneLostContexts());
+    }
+
+    memoryBytes() {
+        return this.chunks.reduce((a, chunk) => a + chunk.points.byteLength, 0);
     }
 
     findXIdx(x) {
@@ -249,12 +263,12 @@ class LineData {
 
         let cIdx = binarySearch(0, this.chunks.length - 1, xRel, (idx) => {
             let chunk = chunks[idx];
-            return chunk.lineCenter[2 * (chunk.to - 1)];
+            return chunk.isEmpty() ? -Infinity : chunk.lastX();
         });
 
         let chunk = chunks[cIdx];
-        let pIdx = binarySearch(chunk.from, chunk.to - 1, xRel, (idx) => {
-            return chunk.lineCenter[2 * idx];
+        let pIdx = binarySearch(0, Math.max(chunk.to - 1, 0), xRel, (idx) => {
+            return chunk.points[2 * idx];
         });
 
         return {
@@ -273,14 +287,19 @@ class LineData {
     _addChunk() {
         let lastChunck = this.chunks.at(-1);
         let chunk = new LineChunck(this.chunkSize);
-        chunk.lastPoint = lastChunck.lastPoint;
+        // Start with the previous chunk's last point, so the segment joining
+        // the two chunks is drawn.
+        if (!lastChunck.isEmpty()) {
+            chunk.appendPoint(lastChunck.points[2 * (lastChunck.to - 1)],
+                              lastChunck.points[2 * (lastChunck.to - 1) + 1]);
+        }
         this.chunks.push(chunk);
     }
 
     appendPoint(x, y) {
         if (this.chunks.at(-1).isFull()) {
             if (this.chunks.length >= this._maxChunks()) {
-                this.chunks.shift();
+                this.chunks.shift().release();
             }
             this._addChunk();
         }
@@ -294,17 +313,31 @@ class LineData {
 }
 
 class GLLineDrawer {
+    /**
+     * ctx: {canvas, margin} of the plot; the canvas only gives the plot's
+     * size. The GL work goes to the shared context (sharedLineGL()).
+     */
     constructor(ctx) {
         this.ctx = ctx;
         this.setViewport(-1, 1, -1, 1)
-        this.createGLProgram();
+        this.gl = null;
     }
 
-    createGLProgram() {
-        let gl = this.ctx.gl;
+    /** The shared context, with this drawer's program (re)built for it. */
+    _gl() {
+        const shared = sharedLineGL();
+        if (this.gl !== shared.gl) {
+            this.gl = shared.gl;
+            this.createGLProgram(shared.drawer);
+        }
+        return this.gl;
+    }
+
+    createGLProgram(drawer) {
+        let gl = this.gl;
         const program = this.program = gl.createProgram();
-        gl.attachShader(program, this.ctx.vertexShader);
-        gl.attachShader(program, this.ctx.fragmentShader);
+        gl.attachShader(program, drawer.vertexShader);
+        gl.attachShader(program, drawer.fragmentShader);
         gl.linkProgram(program);
         if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
             throw gl.getProgramInfoLog(program);
@@ -320,35 +353,35 @@ class GLLineDrawer {
     }
 
     bindData(gpuData) {
-        return gpuData.bind(this.ctx.gl);
+        return gpuData.bind(this.gl);
     }
 
-    bindAttributeData(attributeName, gpuData, size) {
-        const gl = this.ctx.gl;
+    /** Binds a chunk's point buffer as the two per-instance attributes p0
+     * (point i) and p1 (point i + 1). */
+    bindPointAttributes(gpuData) {
+        const gl = this.gl;
 
         let updated = this.bindData(gpuData);
-
-        const attribute = gl.getAttribLocation(this.program, attributeName);
-        gl.enableVertexAttribArray(attribute);
-        gl.vertexAttribPointer(attribute, size, gl.FLOAT, false, 0, 0);
+        [['p0', 0], ['p1', 8]].forEach(([name, offset]) => {
+            const attribute = gl.getAttribLocation(this.program, name);
+            gl.enableVertexAttribArray(attribute);
+            gl.vertexAttribPointer(attribute, 2, gl.FLOAT, false, 8, offset);
+            gl.vertexAttribDivisor(attribute, 1);
+        });
 
         return updated;
     }
 
-    clear() {
-        let gl = this.ctx.gl;
-        gl.clear(gl.COLOR_BUFFER_BIT);
-    }
-
     drawLineChunk(lineChunk, style) {
-        let gl = this.ctx.gl;
+        let gl = this._gl();
         let canvas = this.ctx.canvas;
         let program = this.program;
         gl.useProgram(program);
 
-        let updated = this.bindData(lineChunk.gpuIndexBuffer)
-        updated += this.bindAttributeData('lineCenter', lineChunk.gpuLineCenter, 2);
-        updated += this.bindAttributeData('lineTangential', lineChunk.gpuLineTangential, 2);
+        if (lineChunk.to < 2) {
+            return 0;               // no segment yet
+        }
+        let updated = this.bindPointAttributes(lineChunk.gpuPoints);
 
         lineChunk.wasBuffered = true;
 
@@ -374,10 +407,8 @@ class GLLineDrawer {
 
         gl.uniform1f(this.zUniformLocation, style.z);
 
-        let vec2trig = x => (x / 4) * 6
-
-        gl.drawElements(gl.TRIANGLES, vec2trig(lineChunk.to - lineChunk.from),
-            gl.UNSIGNED_SHORT, vec2trig(lineChunk.from));
+        // One instance per segment, 4 strip vertices each (see the vertex shader).
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, lineChunk.to - 1);
 
         return updated;
     }

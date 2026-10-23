@@ -45,7 +45,10 @@ class SeriesDataChunk {
         this.size = size;
         this.dim = dim;
         this.times = new Float64Array(size);
+        // One Float32Array per column. seal() replaces a constant column by
+        // null and keeps its value in constValue (read through value()).
         this.timedData = Array.from(Array(dim)).map(_ => new Float32Array(size));
+        this.constValue = null;
         this.timedDataYLimits = Array.from(Array(dim)).map(_ => new Lim(0, 0));
         this.timeFrom = 0;
         this.timeTo = 0;
@@ -54,6 +57,70 @@ class SeriesDataChunk {
 
     isFull() {
         return this.entries == this.size;
+    }
+
+    /**
+     * Called once the chunk is full; it is never written again. Constant
+     * columns (72% of them in a typical hand session: held commands, unused
+     * joints, slow sensors) are stored as one value, and the times array is
+     * swapped for an identical one another series already holds (`timesRegistry`,
+     * see Traces._sharedTimes). Lossless.
+     */
+    seal(timesRegistry) {
+        const n = this.entries;
+        for (let d = 0; d < this.dim; d++) {
+            const col = this.timedData[d];
+            const v0 = col[0];
+            let constant = true;
+            if (v0 !== v0) {            // NaN: constant only if all are NaN
+                for (let i = 1; i < n; i++) {
+                    if (col[i] === col[i]) { constant = false; break; }
+                }
+            } else {
+                for (let i = 1; i < n; i++) {
+                    if (col[i] !== v0) { constant = false; break; }
+                }
+            }
+            if (constant) {
+                if (this.constValue === null) {
+                    this.constValue = new Float64Array(this.dim);
+                }
+                this.constValue[d] = v0;
+                this.timedData[d] = null;
+            }
+        }
+        if (timesRegistry) {
+            this.times = timesRegistry(this.times, n);
+        }
+    }
+
+    value(index, entry) {
+        const col = this.timedData[index];
+        return col === null ? this.constValue[index] : col[entry];
+    }
+
+    /** Copies column `index` (entries 0..entries-1) into `target` at `offset`. */
+    copyColumn(index, target, offset) {
+        const col = this.timedData[index];
+        if (col === null) {
+            target.fill(this.constValue[index], offset, offset + this.entries);
+        } else {
+            target.set(col.subarray(0, this.entries), offset);
+        }
+    }
+
+    /** Bytes held by this chunk; times counted only if not `seenTimes`. */
+    memoryBytes(seenTimes) {
+        let dense = 0, constCols = 0;
+        this.timedData.forEach(col => {
+            if (col === null) { constCols++; } else { dense += col.byteLength; }
+        });
+        let times = 0;
+        if (!seenTimes || !seenTimes.has(this.times)) {
+            times = this.times.byteLength;
+            if (seenTimes) seenTimes.add(this.times);
+        }
+        return {dense, constCols, times};
     }
 
     dataYLim(index) {
@@ -94,17 +161,31 @@ class SeriesDataChunk {
         let times = this.times;
         let timedData = this.timedData[index];
 
+        if (timedData === null) {
+            const val = this.constValue[index];
+            for (let i = 0; i < this.entries; i++) {
+                callback(times[i], val);
+            }
+            return;
+        }
         for (let i = 0; i < this.entries; i++) {
             callback(times[i], timedData[i]);
         }
     }
 
     _valueIndexAtEntrie(index, entry) {
-        return this.timedData[index][entry];
+        return this.value(index, entry);
     }
 
     _valueIndexAtEntries(index, entryFrom, entryTo, callback) {
         let indexTimedData = this.timedData[index];
+        if (indexTimedData === null) {
+            // Every entry has the same value: once is enough for a y-limit.
+            if (entryFrom <= entryTo) {
+                callback(this.constValue[index]);
+            }
+            return;
+        }
         for (let i = entryFrom; i <= entryTo; i++) {
             callback(indexTimedData[i]);
         }
@@ -137,15 +218,20 @@ class SeriesDataChunk {
         if (index === null) {
             return null;
         } else {
-            return this.timedData.map(d => d[index]);
+            const out = new Array(this.dim);
+            for (let d = 0; d < this.dim; d++) {
+                out[d] = this.value(d, index);
+            }
+            return out;
         }
     }
 
 }
 
 class SeriesData {
-    constructor(name, dim, chunkSize, maxSize) {
+    constructor(name, dim, chunkSize, maxSize, timesRegistry) {
         this.name = name;
+        this.timesRegistry = timesRegistry;
         this.chunkSize = chunkSize;
         this.dim = dim;
 
@@ -229,7 +315,11 @@ class SeriesData {
             this._addChunk();
         }
 
-        this.chunks.at(-1).record(time, data);
+        const chunk = this.chunks.at(-1);
+        chunk.record(time, data);
+        if (chunk.isFull()) {
+            chunk.seal(this.timesRegistry);
+        }
         this.dataVersion ++;
         return true;
     }
@@ -319,7 +409,36 @@ class Traces {
         this.maxSize = maxSize;
         this.callbackFn = [callbackFn];
         this.currentTime = 0;
+        this._sharedTimes = this._sharedTimes.bind(this);
         this.clear(true);
+    }
+
+    /**
+     * Times array to keep for a just sealed chunk: an identical one another
+     * series already holds, else `times` itself (registered for the next).
+     * Series logged in the same messages fill identical chunks. Bounded FIFO
+     * (Map insertion order) so evicted chunks are not pinned for long.
+     */
+    _sharedTimes(times, entries) {
+        const key = `${times[0]}|${times[entries - 1]}|${entries}`;
+        const reg = this._timesRegistry;
+        const known = reg.get(key);
+        if (known !== undefined && known.length === times.length) {
+            let same = true;
+            for (let i = 0; i < entries; i++) {
+                if (known[i] !== times[i]) { same = false; break; }
+            }
+            if (same) {
+                return known;
+            }
+        }
+        reg.delete(key);
+        reg.set(key, times);
+        const limit = 2 * this.seriesData.size + 64;
+        while (reg.size > limit) {
+            reg.delete(reg.keys().next().value);
+        }
+        return times;
     }
 
     callback(type, payload) {
@@ -327,8 +446,12 @@ class Traces {
     }
 
     clear(supressEvent, newMaxSize) {
+        if (this.lineData) {
+            this.lineData.forEach(lineData => lineData.release());
+        }
         this.seriesData = new Map();
         this.lineData = new Map();
+        this._timesRegistry = new Map();
         this.staticData = new Map();
         this.view = {
             xlim: [-1, -1],
@@ -396,7 +519,7 @@ class Traces {
     record(name, value) {
         let newSeries = false;
         if (!this.seriesData.has(name)) {
-            this.seriesData.set(name, new SeriesData(name, value.length, CHUNK_SIZE, this.maxSize))
+            this.seriesData.set(name, new SeriesData(name, value.length, CHUNK_SIZE, this.maxSize, this._sharedTimes))
             newSeries = true;
         }
         this.seriesData.get(name).record(this.time, value);
@@ -447,6 +570,43 @@ class Traces {
         return Array.from(this.seriesData.keys());
     }
 
+    /**
+     * Frees the render buffers (CPU and GPU) of every line not in `keys`
+     * (`_lineDataKey(name, index)` of the lines the plots show now); the rest
+     * drop GPU buffers of plots that are gone. Called after a layout change.
+     */
+    retainLineData(keys) {
+        for (const [key, lineData] of this.lineData) {
+            if (keys.has(key)) {
+                lineData.pruneLostContexts();
+            } else {
+                lineData.release();
+                this.lineData.delete(key);
+            }
+        }
+    }
+
+    /** Memory held by the traces and the plotted lines, in bytes. */
+    memoryReport() {
+        const seen = new Set();
+        let dense = 0, constCols = 0, cols = 0, times = 0;
+        for (const series of this.seriesData.values()) {
+            for (const chunk of series.chunks) {
+                const m = chunk.memoryBytes(seen);
+                dense += m.dense; constCols += m.constCols; times += m.times;
+                cols += chunk.dim;
+            }
+        }
+        let lines = 0;
+        for (const lineData of this.lineData.values()) {
+            lines += lineData.memoryBytes();
+        }
+        return {
+            values: dense, constant_columns: constCols, columns: cols, times: times,
+            lines_cpu: lines, lines_gpu_approx: lines, line_count: this.lineData.size,
+        };
+    }
+
     getLineData(name, index, width) {
         let key = this._lineDataKey(name, index);
 
@@ -463,4 +623,15 @@ class Traces {
     yLim(timeFrom, timeTo, name, index, yLim) {
         return this.seriesData.get(name).yLim(timeFrom, timeTo, index, yLim);
     }
+}
+
+/** Console helper: memory of the current session's traces and plot lines. */
+function traceMemory() {
+    const r = currentSession.traces.memoryReport();
+    const mb = b => `${(b / 1e6).toFixed(1)} MB`;
+    console.log(
+        `trace values ${mb(r.values)} (${r.constant_columns}/${r.columns} chunk columns constant), ` +
+        `times ${mb(r.times)}, plot lines ${mb(r.lines_cpu)} CPU + ~${mb(r.lines_gpu_approx)} GPU ` +
+        `(${r.line_count} lines)`);
+    return r;
 }

@@ -842,6 +842,12 @@ function updateLayout() {
         return plot;
     });
 
+    // Free the render buffers of lines no plot shows anymore.
+    const shownLines = new Set();
+    plots.forEach(plot => plot.lines.forEach(line =>
+        shownLines.add(traces._lineDataKey(line.dataName, line.dataIdx))));
+    traces.retainLineData(shownLines);
+
     updatePlotViewport();
     forcePlotRefresh = true;
 }

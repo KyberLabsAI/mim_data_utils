@@ -24,8 +24,10 @@ class Plot {
 
         this.margin = [-10, 20, -5, 20];
 
-        this.glDrawer = new GLDrawer(canvasLine, this.margin);
-        this.lineDrawer = new GLLineDrawer(this.glDrawer.ctx);
+        // Lines are drawn in the shared WebGL2 context (line.js, sharedLineGL)
+        // and copied into this plain 2D canvas.
+        this.lineCtx2d = canvasLine.getContext('2d');
+        this.lineDrawer = new GLLineDrawer({canvas: canvasLine, margin: this.margin});
         this.axesDrawer = new AxesDrawer(canvasAxes, canvasGrid, this.margin, this.devicePixelRatio, eventCallback);
 
         this.lines = [];
@@ -61,7 +63,6 @@ class Plot {
         }
 
         this.updateCanvasStyle(width, height);
-        this.glDrawer.updateSize(width, height);
         this.lineDrawer.updateSize(width, height);
         this.axesDrawer.updateSize(width, height);
     }
@@ -166,9 +167,12 @@ class Plot {
 
         let updated = 0;
         if (refreshPlots) {
+            const canvas = this.canvasLine;
             if (this.lines.length == 0) {
-                this.lineDrawer.clear();
+                this.lineCtx2d.clearRect(0, 0, canvas.width, canvas.height);
             } else {
+                const shared = sharedLineGL();
+                shared.begin(canvas.width, canvas.height);
                 this.lines.toReversed().forEach(line => {
                     let lineData = traces.getLineData(line.dataName, line.dataIdx);
                     let offset = lineData.timeOffset;
@@ -179,6 +183,10 @@ class Plot {
                         updated += this.lineDrawer.drawLineChunk(chunks[idx], line.style)
                     }
                 });
+                // The shared drawing buffer is still valid within this task
+                // (before the browser composites), so no preserveDrawingBuffer.
+                this.lineCtx2d.clearRect(0, 0, canvas.width, canvas.height);
+                this.lineCtx2d.drawImage(shared.canvas, 0, 0);
             }
         }
     }
