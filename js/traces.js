@@ -99,13 +99,13 @@ class SeriesDataChunk {
         return col === null ? this.constValue[index] : col[entry];
     }
 
-    /** Copies column `index` (entries 0..entries-1) into `target` at `offset`. */
-    copyColumn(index, target, offset) {
+    /** Copies column `index`, entries from..to-1 (default all), into `target` at `offset`. */
+    copyColumn(index, target, offset, from = 0, to = this.entries) {
         const col = this.timedData[index];
         if (col === null) {
-            target.fill(this.constValue[index], offset, offset + this.entries);
+            target.fill(this.constValue[index], offset, offset + to - from);
         } else {
-            target.set(col.subarray(0, this.entries), offset);
+            target.set(col.subarray(from, to), offset);
         }
     }
 

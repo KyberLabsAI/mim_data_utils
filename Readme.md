@@ -45,10 +45,14 @@ canvas. `traceMemory()` in the browser console prints what is held.
 
 ## Dumping traces
 
-*Dump traces* (top bar) downloads every time trace the viewer currently holds
+*Dump traces* (top bar) first asks what to dump: the last 0.5 / 1 / 2 / 5 /
+10 / 20 minutes (every series, counted back from the newest sample), the
+*displayed traces* (the series plotted in the current layout, all buffered
+samples), or *all*. It downloads the time traces the viewer currently holds
 (the in-memory window, not older data it has already dropped) as one
-gzip-compressed `traces_<time>.mdutrace.gz`, with a progress dialog while it
-collects and compresses. Images, overlays and static data are not included.
+gzip-compressed `traces_<time>_<selection>.mdutrace.gz`, with a progress
+dialog while it collects and compresses; the header's `selection` records the
+choice. Images, overlays and static data are not included.
 
 ```python
 from mim_data_utils import load_mdutrace
