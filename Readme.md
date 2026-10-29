@@ -43,26 +43,60 @@ line anymore. All plots draw their lines with one shared WebGL2 context
 (browsers drop the oldest beyond ~16 contexts), copied into each plot's 2D
 canvas. `traceMemory()` in the browser console prints what is held.
 
-## Dumping traces
+## Exporting data
 
-*Dump traces* (top bar) first asks what to dump: the last 0.5 / 1 / 2 / 5 /
-10 / 20 minutes (every series, counted back from the newest sample), the
-*displayed traces* (the series plotted in the current layout, all buffered
-samples), or *all*. It downloads the time traces the viewer currently holds
-(the in-memory window, not older data it has already dropped) as one
-gzip-compressed `traces_<time>_<selection>.mdutrace.gz`, with a progress
-dialog while it collects and compresses; the header's `selection` records the
-choice. Images, overlays and static data are not included.
+*Export data* (top bar) first asks what to export, one checkbox each:
+
+* **Traces**: the time series.
+* **`<camera>` (video)**, one per image source: the buffered camera images,
+  re-encoded in the browser (WebCodecs `VideoEncoder`, H.264, VP9 as
+  fallback; ~0.1 bit per pixel and frame, a keyframe every 2 s). Consecutive
+  frames share most of their content, so this is ~5-20x smaller than the JPEGs.
+  Every frame keeps its capture timestamp.
+* **`<source>` (depth)**, one per depth source / point cloud: the raw u16
+  depth frames, their JPEG colour images, depth scale and intrinsics.
+* **3D scene setup**: the registered 3D objects (meshes with their vertices and
+  indices, point cloud setups); their `3d/<name>/pos` / `color` series are
+  exported with it.
+
+Sources shown in the layout start checked. Then the range: the last 0.5 / 1 /
+2 / 5 / 10 / 20 minutes (counted back from the newest exported sample),
+*Displayed* (the series plotted in the current layout, all buffered samples),
+or *All*. It downloads what the viewer currently holds (the in-memory window,
+not older data it has already dropped: ~1000 images per camera, 200 depth
+frames per source) as one gzip-compressed `export_<time>_<selection>.mdutrace.gz`,
+with a progress dialog; the header's `selection` records the choice. Camera
+images already handed over to recorded video segments are not in the window.
+Overlays are not included.
 
 ```python
-from mim_data_utils import load_mdutrace
+from mim_data_utils import (load_mdutrace, load_mdutrace_videos,
+                            load_mdutrace_depth, load_mdutrace_scene)
 
-traces = load_mdutrace('traces_....mdutrace.gz')
+f = 'export_....mdutrace.gz'
+traces = load_mdutrace(f)
 t, cur = traces['current']      # t: (n,) float64 [s], cur: (n, dim) float32
+
+cam = load_mdutrace_videos(f)['wrist']  # MduVideo
+cam.times                       # (n,) the capture timestamps (trace time axis)
+cam.write('wrist.mp4')          # no re-encode; frame k at times[k] - times[0]
+for t, img in cam.frames():     # decoded RGB frames with their timestamps
+    ...
+
+depth = load_mdutrace_depth(f)['3d/d405']   # MduDepth
+z = depth.depth_m(0)            # (h, w) [m]; depth.rgb(0), depth.points(0)
+scene = load_mdutrace_scene(f)  # {name: registration payload, arrays as numpy}
 ```
 
-`python -m mim_data_utils.trace_dump <file>` lists the series of a dump. The
-file layout is documented at the top of `js/trace_export.js`.
+The mp4 timestamps have microsecond resolution (mkv / webm round to 1 ms),
+so the video timing matches the image timestamps; the start time `t0` is in
+the mp4's `comment` metadata. Needs PyAV (`pip install av`) for the videos and
+the depth colour images.
+
+`python -m mim_data_utils.trace_dump <file>` lists the contents of an export;
+`--videos [OUT_DIR]` also writes every camera as `<export>_<camera>.mp4` (next
+to the export by default). The file layout is documented at the top of
+`js/trace_export.js`. Older trace-only dumps (version 1) still load.
 
 ## Image overlays
 
