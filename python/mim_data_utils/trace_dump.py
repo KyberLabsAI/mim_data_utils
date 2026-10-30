@@ -18,12 +18,20 @@
     scene = load_mdutrace_scene('export_....mdutrace.gz')
     mesh = scene['3d/table']        # registration: vertices, indices, material, ...
 
+    overlays = load_mdutrace_overlays('export_....mdutrace.gz')
+    ov = overlays['camera']['replay_object']    # MduOverlay (Logger.log_overlay)
+    for t, img in cam.frames():
+        rgba, offset = ov.at(t)                 # this frame's overlay or the static one
+        img = composite(img, rgba, offset)      # as the viewer shows it
+
+    log = load_mdutrace_log('export_....mdutrace.gz')   # markdown, markers, settings
+
 The videos keep the capture time of every image: `times` holds the exact
 image timestamps (the time axis of the traces), and write() places frame k at
 times[k] - times[0] in the mp4 (microsecond resolution).
 
 python -m mim_data_utils.trace_dump <file> lists the series, videos, depth
-sources and scene objects of an export; with --videos [OUT_DIR] it also writes every video as an mp4 (named
+sources, scene objects, overlays, markdown messages and markers of an export; with --videos [OUT_DIR] it also writes every video as an mp4 (named
 <export>_<camera>.mp4, next to the export by default).
 """
 import argparse
@@ -273,6 +281,99 @@ def load_mdutrace_depth(path):
     return out
 
 
+class MduOverlay:
+    """One rendered overlay (a Logger.log_overlay name) of one camera.
+
+    Per-frame overlays: times (logged), frame_times (capture time of the
+    image each belongs to, NaN if that image was no longer buffered), numbers
+    (frame numbers or None), offsets ((n, 2): where the PNG goes in the
+    image), pngs. Static versions: static_times, static_offsets, static_pngs,
+    each applying from its time on. An empty overlay has an empty PNG.
+    """
+
+    def __init__(self, info, frames, statics):
+        self.camera, self.name, self.info = info['camera'], info['name'], info
+        (self.times, self.offsets, self.pngs), self.frame_times, self.numbers = frames
+        self.static_times, self.static_offsets, self.static_pngs = statics
+
+    def __len__(self):
+        return len(self.times)
+
+    def __repr__(self):
+        return (f'MduOverlay({self.camera!r}, {self.name!r}: {len(self)} frame overlays, '
+                f'{len(self.static_times)} static versions)')
+
+    @staticmethod
+    def decode(png):
+        """(height, width, 4) uint8 RGBA of a PNG, None for an empty one."""
+        if len(png) == 0:
+            return None
+        import io
+        from PIL import Image
+        return np.asarray(Image.open(io.BytesIO(bytes(png))).convert('RGBA'))
+
+    def at(self, frame_time, tol=1e-6):
+        """(RGBA, offset) drawn over the image captured at `frame_time`, as the
+        viewer shows it: that frame's own overlay, else the static version valid
+        then (the newest at or before it, else the earliest); (None, None) if none."""
+        if len(self.frame_times):
+            k = np.flatnonzero(np.abs(self.frame_times - frame_time) <= tol)
+            if len(k):
+                k = k[-1]
+                return self.decode(self.pngs[k]), self.offsets[k]
+        if len(self.static_times):
+            k = max(int(np.searchsorted(self.static_times, frame_time, side='right')) - 1, 0)
+            return self.decode(self.static_pngs[k]), self.static_offsets[k]
+        return None, None
+
+
+def composite(rgb, rgba, offset=(0, 0)):
+    """`rgb` (h, w, 3) uint8 with the overlay `rgba` alpha-blended in at
+    `offset` (x, y), as the viewer draws it. Returns a new array."""
+    out = np.array(rgb, copy=True)
+    if rgba is None:
+        return out
+    x0, y0 = int(round(offset[0])), int(round(offset[1]))
+    h, w = rgba.shape[:2]
+    xa, ya, xb, yb = max(x0, 0), max(y0, 0), min(x0 + w, out.shape[1]), min(y0 + h, out.shape[0])
+    if xa >= xb or ya >= yb:
+        return out
+    src = rgba[ya - y0:yb - y0, xa - x0:xb - x0].astype(np.float32)
+    a = src[..., 3:4] / 255.
+    dst = out[ya:yb, xa:xb].astype(np.float32)
+    out[ya:yb, xa:xb] = np.round(src[..., :3] * a + dst * (1. - a)).astype(np.uint8)
+    return out
+
+
+def load_mdutrace_overlays(path):
+    """{camera: {overlay name: MduOverlay}} of an export (empty if it has none).
+    Match them to MduVideo frames by time: overlay.at(video.times[k])."""
+    header, buf, base = _read(path)
+    out = {}
+
+    def block(b):
+        n = b['n']
+        arr = lambda key, dtype, count=n: np.frombuffer(buf, dtype, count, base + b[key]).copy()
+        return (arr('times_offset', '<f8'), arr('offsets_offset', '<f8', 2 * n).reshape(n, 2),
+                _split(buf, base + b['data_offset'], arr('sizes_offset', '<u4')))
+
+    for o in header.get('overlays') or []:
+        f = o['frames']
+        frame_times = np.frombuffer(buf, '<f8', f['n'], base + f['frame_times_offset']).copy()
+        out.setdefault(o['camera'], {})[o['name']] = MduOverlay(
+            o, (block(f), frame_times, f.get('numbers')), block(o['statics']))
+    return out
+
+
+def load_mdutrace_log(path):
+    """The export's markdown messages, markers and viewer settings:
+    {'markdown': [(time, text)], 'markers': [(label, time)], 'settings': {...}}."""
+    header, _, _ = _read(path)
+    return {'markdown': [(m['time'], m['text']) for m in header.get('markdown') or []],
+            'markers': [(m['label'], m['time']) for m in header.get('markers') or []],
+            'settings': header.get('settings') or {}}
+
+
 def _export_stem(path):
     name = os.path.basename(path)
     for ext in ('.gz', '.mdutrace'):
@@ -308,6 +409,14 @@ def main(argv=None):
         print(depth)
     for name, obj in load_mdutrace_scene(args.file).items():
         print(f'scene object {name}: {obj.get("type")}')
+    for overlays in load_mdutrace_overlays(args.file).values():
+        for overlay in overlays.values():
+            print(overlay)
+    log = load_mdutrace_log(args.file)
+    if log['markdown']:
+        print(f"{len(log['markdown'])} markdown messages")
+    for label, t in log['markers']:
+        print(f'marker {label!r} at {t:.3f}')
     if args.videos is not None:
         for name, out in export_mdutrace_videos(args.file, args.videos or None).items():
             print(f'{name} -> {out}')

@@ -53,8 +53,12 @@ canvas. `traceMemory()` in the browser console prints what is held.
   fallback; ~0.1 bit per pixel and frame, a keyframe every 2 s). Consecutive
   frames share most of their content, so this is ~5-20x smaller than the JPEGs.
   Every frame keeps its capture timestamp.
+* **`<camera>` (overlays)**, one per image source with overlays
+  (`Logger.log_overlay`): the rendered overlay PNGs, per frame (with the
+  capture time of the image each belongs to) and the static versions.
 * **`<source>` (depth)**, one per depth source / point cloud: the raw u16
   depth frames, their JPEG colour images, depth scale and intrinsics.
+* **Markdown messages**: the `Logger.log_md` messages.
 * **3D scene setup**: the registered 3D objects (meshes with their vertices and
   indices, point cloud setups); their `3d/<name>/pos` / `color` series are
   exported with it.
@@ -67,11 +71,13 @@ not older data it has already dropped: ~1000 images per camera, 200 depth
 frames per source) as one gzip-compressed `export_<time>_<selection>.mdutrace.gz`,
 with a progress dialog; the header's `selection` records the choice. Camera
 images already handed over to recorded video segments are not in the window.
-Overlays are not included.
+The markers and the session's viewer settings (plot layout, 3D cameras) always
+go along.
 
 ```python
-from mim_data_utils import (load_mdutrace, load_mdutrace_videos,
-                            load_mdutrace_depth, load_mdutrace_scene)
+from mim_data_utils import (load_mdutrace, load_mdutrace_videos, load_mdutrace_depth,
+                            load_mdutrace_scene, load_mdutrace_overlays,
+                            load_mdutrace_log, composite)
 
 f = 'export_....mdutrace.gz'
 traces = load_mdutrace(f)
@@ -86,6 +92,13 @@ for t, img in cam.frames():     # decoded RGB frames with their timestamps
 depth = load_mdutrace_depth(f)['3d/d405']   # MduDepth
 z = depth.depth_m(0)            # (h, w) [m]; depth.rgb(0), depth.points(0)
 scene = load_mdutrace_scene(f)  # {name: registration payload, arrays as numpy}
+
+ov = load_mdutrace_overlays(f)['wrist']['replay_object']   # MduOverlay
+for t, img in cam.frames():
+    rgba, offset = ov.at(t)     # this frame's overlay, else the static one then
+    img = composite(img, rgba, offset)   # as the viewer shows it
+
+log = load_mdutrace_log(f)      # {'markdown': [(t, text)], 'markers': [(label, t)], 'settings': {...}}
 ```
 
 The mp4 timestamps have microsecond resolution (mkv / webm round to 1 ms),

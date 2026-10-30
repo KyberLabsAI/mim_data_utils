@@ -191,10 +191,12 @@ class FileLoggerReader:
     To fix that without sorting the whole file, entries are held in a small
     buffer and released oldest-first once enough has been read past them for
     an earlier one to be impossible. The buffer grows to cover the
-    out-of-orderness the recording actually shows; needing more than
-    `max_window_s` of it means the timestamps jump (a clock reset, or two
-    unrelated recordings concatenated) and raises rather than silently
-    reordering across the gap.
+    out-of-orderness the recording actually shows; an entry older than the
+    newest one read by more than `max_window_s` means the timestamps jump
+    backwards (a clock reset, or two unrelated recordings concatenated) and
+    raises rather than silently reordering across the gap. A jump forward
+    (e.g. a static overlay stamped long before the recording started) is
+    fine: the older entries simply come first.
 
     Args:
         raw_order: hand entries back exactly as recorded, no buffering.
@@ -307,25 +309,25 @@ class FileLoggerReader:
                 t = self._t_read_max
 
             if self._t_read_max is None or t >= self._t_read_max:
+                # A jump forward is harmless: what is buffered is older and
+                # is released first (e.g. a static overlay the recording
+                # starts with, stamped when it was first logged).
                 self._t_read_max = t
             else:
                 back = self._t_read_max - t
+                if back > self.max_window_s:
+                    raise ValueError(
+                        f'FileLoggerReader: the recording jumps backwards in '
+                        f'time by {back:.3f} s at t={t:.6f}, more than '
+                        f'max_window_s={self.max_window_s:.3f} s (a clock reset, '
+                        f'or two recordings concatenated). Pass raw_order=True '
+                        f'to read it as recorded, or raise max_window_s.')
                 if back > self._max_backstep:
                     self._max_backstep = back
                     self._hold = max(self._hold, 2.0 * back)
 
             heapq.heappush(self._heap, (t, self._seq, entry))
             self._seq += 1
-
-            span = self._t_read_max - self._heap[0][0]
-            if span > self.max_window_s:
-                raise ValueError(
-                    f'FileLoggerReader: the reorder buffer would have to span '
-                    f'{span:.3f} s, more than max_window_s='
-                    f'{self.max_window_s:.3f} s. The recording jumps backwards '
-                    f'in time by more than that (a clock reset, or two '
-                    f'recordings concatenated). Pass raw_order=True to read it '
-                    f'as recorded, or raise max_window_s.')
 
     def read_all(self, entry_filter_fn=lambda x: True, reducer_fn=None):
         self.reset()

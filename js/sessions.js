@@ -132,6 +132,19 @@ let currentSession = null;      // set by main.js bootstrap
 // while it is open.
 let refreshSessionsUI = () => {};
 
+// Re-render the open panel once the current batch of messages is handled,
+// for sources that appear mid-session (a new camera, overlay image or point
+// cloud): many can arrive in one batch, so the re-renders are coalesced.
+let refreshSessionsUIPending = false;
+function scheduleSessionsUIRefresh() {
+    if (refreshSessionsUIPending) return;
+    refreshSessionsUIPending = true;
+    setTimeout(() => {
+        refreshSessionsUIPending = false;
+        refreshSessionsUI();
+    }, 0);
+}
+
 function ensureSession(name) {
     let sd = sessions.get(name);
     if (!sd) {

@@ -22,11 +22,23 @@
  * images back to back), rgb_sizes_offset (u32, 0 = none), rgb_offset (JPEGs)}.
  * `scene` {objects: {name: registration payload}} or null: the 3D objects;
  * their typed arrays are payload blocks {"__array__": dtype, offset, length}.
+ * `overlays`, one per image source and overlay name (Logger.log_overlay)
+ * {camera, name, frames, statics}: `frames` = the per-frame overlays {n,
+ * times_offset (f64, logged time), frame_times_offset (f64, capture time of
+ * the image it belongs to, NaN if not buffered), numbers (frame numbers or
+ * null), offsets_offset (f64 x, y per overlay: where the PNG goes in the
+ * image), sizes_offset (u32, 0 = empty overlay), data_offset (the PNGs)};
+ * `statics` = the static versions, same without frame_times / numbers, each
+ * applying from its time on.
+ * `markdown` [{time, text}] (Logger.log_md), `markers` [{label, time,
+ * show_summary}] and `settings` (the session's viewer settings: plot layout,
+ * 3D cameras, ...) are plain JSON in the header.
  * Version 1 files are the same without `videos`, `depth` and `scene`.
  *
- * The button first asks what to export (checkboxes: the traces, each camera,
- * each depth source, the 3D scene setup; sources shown in the layout start
- * checked), and the range: the
+ * The button first asks what to export (checkboxes: the traces, each camera's
+ * video, each camera's overlays, each depth source, the markdown messages, the
+ * 3D scene setup; sources shown in the layout start checked; markers and
+ * settings always go along), and the range: the
  * last N minutes (counted back from the newest exported sample), the series
  * plotted in the current layout (all their buffered samples), or everything.
  * Camera images are re-encoded with the browser's VideoEncoder (WebCodecs):
@@ -184,6 +196,13 @@ function _exportDepthSources() {
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Cameras of the session with rendered overlays (Logger.log_overlay), sorted by name. */
+function _exportOverlayCameras(session) {
+    return Array.from(session.cameras.values())
+        .filter(cam => cam.overlays.names().length > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 const _escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
 /** Newest sample time over the series (`seriesNames`: all if null) and the
@@ -196,7 +215,7 @@ function _latestDataTime(traces, seriesNames, frameStores) {
         if (c && c.entries > 0) t = Math.max(t, c.times[c.entries - 1]);
     }
     for (const store of frameStores) {
-        t = Math.max(t, store.times[store.times.length - 1]);
+        if (store.times.length) t = Math.max(t, store.times[store.times.length - 1]);
     }
     return t;
 }
@@ -262,6 +281,47 @@ function _collectDepthSource(pc, staticData, payload, tMin) {
     entry.rgb_sizes_offset = payload.add(Uint32Array.from(rgbs, r => r.byteLength));
     entry.rgb_offset = payload.add(...rgbs.map(r => r.slice()));
     return entry;
+}
+
+/** The rendered overlays (PNG) of one image source, one entry per overlay
+ * name: the per-frame ones from tMin on, each with the capture time of the
+ * image it belongs to (frame_times; NaN when that image is no longer
+ * buffered), and every static version (each applies from its time on, so an
+ * older one can still apply at tMin). Each PNG goes at its offset [x, y] in
+ * the image; an empty overlay has 0 bytes. */
+function _collectOverlays(cam, payload, tMin) {
+    const store = cam.imageStore;
+    const timeOfNumber = new Map();
+    store.numbers.forEach((num, i) => { if (num != null) timeOfNumber.set(num, store.times[i]); });
+    const bytesOf = b => b == null ? new Uint8Array(0) : (b instanceof Uint8Array ? b : new Uint8Array(b));
+    const block = (entries) => {
+        const pngs = entries.map(e => bytesOf(e.bytes));
+        return {
+            n: entries.length,
+            times_offset: payload.add(Float64Array.from(entries, e => e.time)),
+            offsets_offset: payload.add(Float64Array.from(entries.flatMap(e => [e.offset[0], e.offset[1]]))),
+            sizes_offset: payload.add(Uint32Array.from(pngs, p => p.byteLength)),
+            data_offset: payload.add(...pngs.map(p => p.slice())),
+        };
+    };
+    const out = [];
+    for (const name of cam.overlays.names()) {
+        const frames = [];
+        for (const [key, e] of (cam.overlays.byName.get(name) || new Map())) {
+            // Keyed by the image's frame number, or else its time (= the overlay's).
+            const number = key[0] === 'n' ? Number(key.slice(1)) : null;
+            const frameTime = number != null ? (timeOfNumber.get(number) ?? NaN) : e.time;
+            if ((Number.isNaN(frameTime) ? e.time : frameTime) >= tMin) frames.push({...e, number, frameTime});
+        }
+        frames.sort((a, b) => a.time - b.time);
+        const statics = cam.overlays.statics.get(name) || [];
+        if (frames.length === 0 && statics.length === 0) continue;
+        const entry = {camera: cam.name, name, frames: block(frames), statics: block(statics)};
+        entry.frames.frame_times_offset = payload.add(Float64Array.from(frames, f => f.frameTime));
+        entry.frames.numbers = frames.some(f => f.number != null) ? frames.map(f => f.number) : null;
+        out.push(entry);
+    }
+    return out;
 }
 
 /** First index of the sorted `times` (length `n`) with time >= tMin (n if none). */
@@ -543,32 +603,45 @@ async function exportData() {
     const session = currentSession;
     const traces = session.traces;
     const cams = _exportCameras(session);
+    const overlayCams = _exportOverlayCameras(session);
     const depthSources = _exportDepthSources();
     const hasTraces = traces.seriesData.size > 0;
     const hasScene = traces.staticData.size > 0;
-    if (!hasTraces && cams.length === 0 && depthSources.length === 0 && !hasScene) {
+    const nMarkdown = session.mdLog.messages.length;
+    if (!hasTraces && cams.length === 0 && overlayCams.length === 0 && depthSources.length === 0
+            && !hasScene && nMarkdown === 0) {
         await customAlert('No data to export.');
         return;
     }
+    // Each option carries what it selects (`kind` + `item`).
     const options = [
-        {label: 'Traces', title: 'The time series (all, or those plotted for "Displayed")',
+        {kind: 'traces', label: 'Traces', title: 'The time series (all, or those plotted for "Displayed")',
          checked: hasTraces, disabled: !hasTraces},
-        ...cams.map(cam => ({label: `${cam.name} (video)`, checked: !disabledImageSources.has(cam.name),
+        ...cams.map(cam => ({kind: 'video', item: cam, label: `${cam.name} (video)`,
+                             checked: !disabledImageSources.has(cam.name),
                              title: 'Re-encode the buffered camera images as video (H.264 / VP9)'})),
-        ...depthSources.map(pc => ({label: `${pc.name.replace(/^3d\//, '')} (depth)`,
+        ...overlayCams.map(cam => ({kind: 'overlays', item: cam, label: `${cam.name} (overlays)`,
+                                    checked: !disabledImageSources.has(cam.name),
+                                    title: `Its rendered overlays (PNG): ${cam.overlays.names().join(', ')}`})),
+        ...depthSources.map(pc => ({kind: 'depth', item: pc, label: `${pc.name.replace(/^3d\//, '')} (depth)`,
                                     checked: !disabledPointClouds.has(pc.name),
                                     title: 'Raw depth frames (u16), their colour images (JPEG) and intrinsics'})),
-        {label: '3D scene setup', checked: hasScene, disabled: !hasScene,
+        {kind: 'markdown', label: 'Markdown messages', checked: nMarkdown > 0, disabled: nMarkdown === 0,
+         title: `The Logger.log_md messages (${nMarkdown} buffered)`},
+        {kind: 'scene', label: '3D scene setup', checked: hasScene, disabled: !hasScene,
          title: 'The registered 3D objects (meshes, point cloud setups) and their 3d/... pose series'},
     ];
     const choice = await _dumpOptionsDialog(options);
     if (!choice) return;
-    const checked = choice.checked;
-    const withTraces = checked[0];
-    const withScene = checked[checked.length - 1];
-    const selCams = cams.filter((cam, i) => checked[1 + i]);
-    const selDepth = depthSources.filter((pc, i) => checked[1 + cams.length + i]);
-    if (!withTraces && !withScene && selCams.length === 0 && selDepth.length === 0) {
+    const picked = kind => options.filter((o, i) => o.kind === kind && choice.checked[i]);
+    const withTraces = picked('traces').length > 0;
+    const withScene = picked('scene').length > 0;
+    const withMarkdown = picked('markdown').length > 0;
+    const selCams = picked('video').map(o => o.item);
+    const selOverlays = picked('overlays').map(o => o.item);
+    const selDepth = picked('depth').map(o => o.item);
+    if (!withTraces && !withScene && !withMarkdown && selCams.length === 0 && selOverlays.length === 0
+            && selDepth.length === 0) {
         await customAlert('Nothing selected to export.');
         return;
     }
@@ -585,7 +658,8 @@ async function exportData() {
     }
     let tMin = -Infinity;
     if (choice.kind === 'minutes') {
-        const stores = [...selCams.map(cam => cam.imageStore), ...selDepth.map(pc => pc.store)];
+        const stores = [...selCams.map(cam => cam.imageStore), ...selOverlays.map(cam => cam.imageStore),
+                        ...selDepth.map(pc => pc.store)];
         tMin = _latestDataTime(traces, names, stores) - 60 * choice.minutes;
         tag = `last${choice.minutes}min`;
     }
@@ -593,6 +667,7 @@ async function exportData() {
                        t_min: Number.isFinite(tMin) ? tMin : null,
                        series: names ? Array.from(names) : null, traces: withTraces,
                        cameras: selCams.map(cam => cam.name), depth: selDepth.map(pc => pc.name),
+                       overlays: selOverlays.map(cam => cam.name), markdown: withMarkdown,
                        scene: withScene};
 
     const progress = _exportProgressDialog();
@@ -604,17 +679,27 @@ async function exportData() {
         const depth = selDepth.map(pc => _collectDepthSource(pc, traces.staticData, payload, tMin))
             .filter(d => d);
         const sceneSetup = withScene ? _collectSceneSetup(traces, payload) : null;
+        const overlays = selOverlays.flatMap(cam => _collectOverlays(cam, payload, tMin));
+        const markdown = withMarkdown
+            ? session.mdLog.messages.filter(m => m.time >= tMin).map(m => ({time: m.time, text: m.text}))
+            : [];
+        // Small, always included: the marks and the session's viewer settings.
+        const markers = session.marks.markers.map(m => ({label: m.label, time: m.time,
+                                                         show_summary: m.showSummary}));
+        const settings = JSON.parse(JSON.stringify(session.settings || {}));
         const videoTo = selCams.length ? _EXPORT_COLLECT_SHARE + _EXPORT_VIDEO_SHARE : _EXPORT_COLLECT_SHARE;
         const collected = await _collectVideoParts(
             selCams, progress, payload, tMin, _EXPORT_COLLECT_SHARE, videoTo);
         const videos = collected.videos;
         failed = collected.failed;
-        if (series.length === 0 && videos.length === 0 && depth.length === 0 && !sceneSetup) {
+        if (series.length === 0 && videos.length === 0 && depth.length === 0 && !sceneSetup
+                && overlays.length === 0 && markdown.length === 0) {
             throw new Error('no samples in the selected range');
         }
         if (failed.length) selection.video_failed = failed;
         const {blob, rawBytes} = await _gzipParts(
-            [..._traceFileHead({series, videos, depth, scene: sceneSetup}, selection), ...payload.parts],
+            [..._traceFileHead({series, videos, depth, scene: sceneSetup, overlays, markdown, markers, settings},
+                               selection), ...payload.parts],
             progress, videoTo);
         progress.update(1, 'Saving...');
 
@@ -630,6 +715,7 @@ async function exportData() {
         console.log(`exportData: ${series.length} series, ${videos.length} videos` +
                     (videoInfo ? ` (${videoInfo})` : '') + `, ${depth.length} depth sources, ` +
                     `scene ${sceneSetup ? Object.keys(sceneSetup.objects).length + ' objects' : 'no'}, ` +
+                    `${overlays.length} overlays, ${markdown.length} markdown messages, ` +
                     `${(rawBytes / 1e6).toFixed(1)} MB, gzip ${(blob.size / 1e6).toFixed(1)} MB -> ${a.download}`);
     } catch (e) {
         if (!(e instanceof _ExportCancelled)) {

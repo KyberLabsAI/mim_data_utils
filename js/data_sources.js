@@ -224,18 +224,23 @@ function parseSetup(sd, data) {
             // handler in scene3d.js builds the Mesh3D / PointCloud3D (only
             // when this session is the displayed one; see SessionData).
             sd.traces.recordStaticData(data.key, data.payload);
+            if (active) scheduleSessionsUIRefresh();    // a new point cloud
             return true;
         } else if (data.kind === 'setting') {
             return applySetting(sd, data.name, data.payload);
         }
     } else if (data.op === 'remove') {
         sd.traces.staticData.delete(data.key);
-        if (active) scene.removeObject(data.key);
+        if (active) {
+            scene.removeObject(data.key);
+            scheduleSessionsUIRefresh();
+        }
         return true;
     } else if (data.op === 'clear') {
         sd.traces.staticData.clear();
         if (active) {
             scene.clear();
+            scheduleSessionsUIRefresh();
         }
         return true;
     }

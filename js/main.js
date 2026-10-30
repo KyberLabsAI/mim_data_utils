@@ -24,6 +24,7 @@ function getOrCreateCamera(sd, name) {
         // Its hover bar edits overlayConfig(name) in place.
         view.onSettingsChange = () => persistVisibility();
         view.setShown(sd === currentSession && !disabledImageSources.has(view.name));
+        if (sd === currentSession) scheduleSessionsUIRefresh();
     };
     sd.cameras.set(name, cam);
     if (sd !== currentSession) {
@@ -34,6 +35,7 @@ function getOrCreateCamera(sd, name) {
         // A newly-appearing source honors any saved "disabled" selection; new
         // sources default to shown.
         applyImageVisibility();
+        scheduleSessionsUIRefresh();
     }
     return cam;
 }

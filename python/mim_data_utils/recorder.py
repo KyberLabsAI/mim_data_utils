@@ -466,6 +466,114 @@ class _CameraEncoder:
                   'kept fragmented file (live-viewable, seeks poorly)')
 
 
+class _OverlayVideoEncoder:
+    """One static overlay burnt into its camera's frames, encoded as its own
+    video (``<stem>_<camera>__<overlay>.mp4``) by a `_CameraEncoder`.
+
+    Static overlays (``Logger.log_overlay(..., static=True)``) apply from their
+    time on over every frame of the camera until the next version replaces
+    them, so each camera frame is composited with the version current when it
+    arrives: JPEG decoded, overlay PNG alpha-blended at its offset, JPEG
+    re-encoded. That runs in a worker thread (no CPU pinning, cv2 releases the
+    GIL), so the server's relay threads only hand frames over. When the worker
+    falls behind, a frame goes in as is, without the overlay, rather than being
+    dropped: the video keeps the camera stream's frames and timing.
+    """
+
+    _MAX_QUEUE = 4
+    _JPEG_QUALITY = 92
+
+    def __init__(self, camera, overlay, out_path, **encoder_kwargs):
+        self.camera, self.overlay = camera, overlay
+        self.out_path = out_path
+        self.encoder = _CameraEncoder(f'{camera} + {overlay}', out_path, **encoder_kwargs)
+        self._art = None          # (bgr uint8, alpha float32 (h, w, 1), (x, y)) or None
+        self._queue = collections.deque()
+        self._event = threading.Event()
+        self._stop = False
+        self.passed_through = 0   # frames written without the overlay (worker behind)
+        self._worker = threading.Thread(target=self._run, daemon=True,
+                                        name=f'overlay-video-{_safe_name(overlay)}')
+        self._worker.start()
+
+    def set_overlay(self, png, offset):
+        """The overlay version from now on (`png` None / empty: none)."""
+        art = None
+        if png:
+            import cv2
+            import numpy as np
+            img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_UNCHANGED)
+            if img is not None and img.ndim == 3 and img.shape[2] == 4:
+                art = (img[..., :3].copy(), img[..., 3:4].astype(np.float32) / 255.,
+                       (int(round(offset[0])), int(round(offset[1]))) if offset else (0, 0))
+        self._queue.append(('overlay', art))
+        self._event.set()
+
+    def feed(self, jpeg, t):
+        if jpeg is None:
+            return
+        if sum(1 for kind, *_ in list(self._queue) if kind == 'frame') >= self._MAX_QUEUE:
+            self._queue.append(('raw', jpeg, t))
+            self.passed_through += 1
+        else:
+            self._queue.append(('frame', jpeg, t))
+        self._event.set()
+
+    def _composite(self, jpeg):
+        import cv2
+        import numpy as np
+        art = self._art
+        if art is None:
+            return jpeg
+        frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return jpeg
+        color, alpha, (x0, y0) = art
+        h, w = color.shape[:2]
+        xa, ya = max(x0, 0), max(y0, 0)
+        xb, yb = min(x0 + w, frame.shape[1]), min(y0 + h, frame.shape[0])
+        if xa >= xb or ya >= yb:
+            return jpeg
+        a = alpha[ya - y0:yb - y0, xa - x0:xb - x0]
+        src = color[ya - y0:yb - y0, xa - x0:xb - x0].astype(np.float32)
+        dst = frame[ya:yb, xa:xb].astype(np.float32)
+        frame[ya:yb, xa:xb] = (src * a + dst * (1. - a) + 0.5).astype(np.uint8)
+        ok, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self._JPEG_QUALITY])
+        return buf.tobytes() if ok else jpeg
+
+    def _run(self):
+        _all_cpus()     # this thread only: the server itself stays pinned
+        while True:
+            self._event.wait(0.1)
+            self._event.clear()
+            while self._queue:
+                kind, *args = self._queue.popleft()
+                try:
+                    if kind == 'overlay':
+                        self._art = args[0]
+                    elif kind == 'frame':
+                        enc = self.encoder
+                        if not enc.started:
+                            enc.feed(self._composite(args[0]), args[1])
+                        elif enc._should_keep(args[1]):   # fps limit: skip before compositing
+                            enc._write(self._composite(args[0]))
+                    else:
+                        self.encoder.feed(args[0], args[1])
+                except Exception as e:
+                    print(f'[recorder] overlay video {self.camera}/{self.overlay}: {e}')
+            if self._stop and not self._queue:
+                return
+
+    def close(self):
+        self._stop = True
+        self._event.set()
+        self._worker.join()
+        self.encoder.close()
+        if self.passed_through:
+            print(f'[recorder]   {self.camera} + {self.overlay}: {self.passed_through} '
+                  f'frame(s) written without the overlay (compositing fell behind)')
+
+
 class Recorder:
     """Writes a stream of viewer messages (raw msgpack bytes, as the server
     sends them to its websocket clients) to a zstandard-compressed file.
@@ -505,6 +613,11 @@ class Recorder:
 
         self._enc_lock = threading.Lock()
         self._encoders = {}  # camera name -> _CameraEncoder
+        # Static overlays (encode_video): the current version per (camera,
+        # overlay name) as (png, offset), and a video per overlay seen with
+        # content (_OverlayVideoEncoder).
+        self._static_overlays = {}
+        self._overlay_videos = {}
 
         # async_write: feed() only queues; a writer thread compresses and
         # writes, so the caller (the server's broadcast threads) never waits
@@ -583,8 +696,9 @@ class Recorder:
 
     def _close_encoders(self):
         with self._enc_lock:
-            encoders = list(self._encoders.values())
+            encoders = list(self._encoders.values()) + list(self._overlay_videos.values())
             self._encoders = {}
+            self._overlay_videos = {}
         if encoders:
             print(f'[recorder] Finalising {len(encoders)} video file(s)...')
         for enc in encoders:
@@ -622,11 +736,16 @@ class Recorder:
 
         if self.encode_video:
             for i in items:
-                if isinstance(i, dict) and _item_field(i, 'type') in (b'image', 'image'):
+                if not isinstance(i, dict):
+                    continue
+                kind = _item_field(i, 'type')
+                if kind in (b'image', 'image'):
                     self._feed_encoder(
                         _item_field(i, 'name'),
                         _item_field(i, 'payload'),
                         _item_field(i, 'time'))
+                elif kind in (b'image_overlay', 'image_overlay') and _item_field(i, 'static'):
+                    self._static_overlay(i)
 
         if no_filter:
             self._write(message)
@@ -655,6 +774,39 @@ class Recorder:
                 self._encoders[name] = enc
                 self.files.append(out_path)
             enc.feed(jpeg, t)
+            for (camera, _), video in self._overlay_videos.items():
+                if camera == name:
+                    video.feed(jpeg, t)
+
+    def _static_overlay(self, item):
+        """A static overlay version (`image_overlay` item with `static`): from
+        now on, frames of its camera go into its overlay video with it burnt in.
+        The video starts with the first version that draws anything."""
+        def text(v):
+            return v.decode('utf-8', 'replace') if isinstance(v, bytes) else v
+        camera, overlay = text(_item_field(item, 'name')), text(_item_field(item, 'overlay'))
+        if camera is None or overlay is None:
+            return
+        png, offset = _item_field(item, 'payload'), _item_field(item, 'offset')
+        key = (camera, overlay)
+        with self._enc_lock:
+            self._static_overlays[key] = (png, offset)
+            video = self._overlay_videos.get(key)
+            if video is None:
+                if not png or not self._recording:
+                    return
+                stem = Path(self.path).with_suffix('')
+                out_path = f'{stem}_{_safe_name(camera)}__{_safe_name(overlay)}.mp4'
+                video = _OverlayVideoEncoder(
+                    camera, overlay, out_path,
+                    size=self.encode_size, fps_limit=self.encode_fps,
+                    cq=self.encode_cq, denoise=self.encode_denoise,
+                    keyframe_s=self.encode_keyframe_s)
+                self._overlay_videos[key] = video
+                self.files.append(out_path)
+                print(f'[recorder] Static overlay {overlay!r} on {camera}: '
+                      f'also encoding the camera with it -> {out_path}')
+            video.set_overlay(png, offset)
 
     # -- public API -----------------------------------------------------------
 
@@ -683,11 +835,24 @@ class Recorder:
             return
         with self._enc_lock:
             self._encoders = {}
+            self._static_overlays = {}
+            self._overlay_videos = {}
         self._open_file()
         for msg in header:
             if msg is not None:
                 self._write(msg)
         self._recording = True
+        if self.encode_video:
+            # The static overlays already showing are part of the header.
+            for msg in header:
+                try:
+                    items = ormsgpack.unpackb(msg) if isinstance(msg, (bytes, bytearray)) else None
+                except Exception:
+                    items = None
+                for i in items if isinstance(items, list) else []:
+                    if (isinstance(i, dict) and _item_field(i, 'type') in (b'image_overlay', 'image_overlay')
+                            and _item_field(i, 'static')):
+                        self._static_overlay(i)
         print(f'[recorder] Recording to {self.path}')
         if self.encode_video:
             stem = Path(self.path).with_suffix('')
@@ -703,7 +868,8 @@ class Recorder:
                 opts.append(f'keyframe every {self.encode_keyframe_s:g}s')
             opt_note = f" ({', '.join(opts)})" if opts else ''
             print(f'[recorder] Encoding H.265 video per camera{opt_note} to '
-                  f'{stem}_<camera>.mp4 (opened when each stream starts)')
+                  f'{stem}_<camera>.mp4 (opened when each stream starts); a static '
+                  f'overlay also gets {stem}_<camera>__<overlay>.mp4')
 
     def capture_begin(self, average=None, average_s=None):
         """The _begin frames. With `average`, they combine all frames of the next

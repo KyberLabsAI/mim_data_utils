@@ -21,6 +21,9 @@ mkdir -p "$RECORDINGS_DIR"
 # at low res/fps) but coarser seeking and up to N s until a live viewer decodes.
 # denoise / denoiseN applies ffmpeg hqdn3d (default strength 4) before the
 # encoder: sensor noise is what costs bits on a mostly static scene (~-35%).
+# A camera with a static overlay (Logger.log_overlay(..., static=True)) also
+# gets <stem>_<camera>__<overlay>.mp4: the same frames with that overlay burnt
+# in (the version current at each frame), same settings and timing.
 # Video is H.265 (hevc_nvenc) in constant-quality mode; cqNN picks the level
 # (default cq30; lower = better/bigger: cq26 ~1.6 Mbit/s, cq30 ~0.9, cq34 ~0.5
 # at 640x480 on the D405 colour stream).
