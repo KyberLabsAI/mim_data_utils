@@ -62,7 +62,7 @@ setup(
         "ormsgpack",
         'zstandard',
         'meshio',
-        'pyzmq'
+        'eclipse-zenoh',
     ],
     extras_require={
         # Image overlay rendering in the server: skia draws antialiased at
@@ -81,9 +81,4 @@ setup(
         "console_scripts": [],
     },
     python_requires=">=3.6",
-    data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-    ],
 )

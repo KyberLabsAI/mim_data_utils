@@ -65,11 +65,12 @@ canvas. `traceMemory()` in the browser console prints what is held.
 
 Sources shown in the layout start checked. Then the range: the last 0.5 / 1 /
 2 / 5 / 10 / 20 minutes (counted back from the newest exported sample),
-*Displayed* (the series plotted in the current layout, all buffered samples),
-or *All*. It downloads what the viewer currently holds (the in-memory window,
+*Displayed* (the time range the plots show now, zoomed or the live window;
+all series), or *All*. It downloads what the viewer currently holds (the in-memory window,
 not older data it has already dropped: ~1000 images per camera, 200 depth
 frames per source) as one gzip-compressed `export_<time>_<selection>.mdutrace.gz`,
-with a progress dialog; the header's `selection` records the choice. Camera
+with a progress dialog; the header's `selection` records the choice
+(`t_min` / `t_max` for the range). Camera
 images already handed over to recorded video segments are not in the window.
 The markers and the session's viewer settings (plot layout, 3D cameras) always
 go along.

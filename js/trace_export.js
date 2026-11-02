@@ -126,7 +126,8 @@ const _DUMP_MINUTES = [0.5, 1, 2, 5, 10, 20];
 
 /** Asks what to export: which data (one checkbox per entry of `options`,
  * {label, title, checked, disabled}) and which range. Resolves to
- * {kind: 'minutes', minutes} | {kind: 'displayed'} | {kind: 'all'}, each with
+ * {kind: 'minutes', minutes} | {kind: 'displayed'} (the plotted time range) |
+ * {kind: 'all'}, each with
  * `checked` (one bool per option), or null on cancel. */
 function _dumpOptionsDialog(options) {
     return new Promise(resolve => {
@@ -146,7 +147,7 @@ function _dumpOptionsDialog(options) {
             <div class="msg">Which range?</div>
             <div class="dump-options">
                 ${minuteButtons}
-                <button data-kind="displayed" title="The series plotted in the current layout, all buffered samples">Displayed</button>
+                <button data-kind="displayed" title="The time range shown in the plots (all series)">Displayed</button>
                 <button data-kind="all">All</button>
             </div>
             <div class="buttons">
@@ -172,12 +173,6 @@ function _dumpOptionsDialog(options) {
     });
 }
 
-/** Series names plotted in the current layout. */
-function _displayedSeriesNames() {
-    const names = new Set();
-    plots.forEach(plot => plot.lines.forEach(line => names.add(line.dataName)));
-    return names;
-}
 
 /** Cameras of the session with buffered images, sorted by name. */
 function _exportCameras(session) {
@@ -257,13 +252,13 @@ function _collectSceneSetup(traces, payload) {
     return {objects};
 }
 
-/** Copies the depth source's frames from tMin on: per frame the time, the raw
+/** Copies the depth source's frames in [tMin, tMax]: per frame the time, the raw
  * depth (u16, little-endian), the depth scale (NaN = the registration's), the
  * JPEG colour image (0 bytes if none) and the intrinsics override. */
-function _collectDepthSource(pc, staticData, payload, tMin) {
+function _collectDepthSource(pc, staticData, payload, tMin, tMax = Infinity) {
     const store = pc.store;
     const start = _firstIndexFrom(store.times, store.times.length, tMin);
-    const n = store.times.length - start;
+    const n = _firstIndexAfter(store.times, store.times.length, tMax) - start;
     if (n <= 0) return null;
     const idx = Array.from({length: n}, (_, k) => start + k);
     const depths = idx.map(i => store.depths[i]);
@@ -284,12 +279,12 @@ function _collectDepthSource(pc, staticData, payload, tMin) {
 }
 
 /** The rendered overlays (PNG) of one image source, one entry per overlay
- * name: the per-frame ones from tMin on, each with the capture time of the
+ * name: the per-frame ones in [tMin, tMax], each with the capture time of the
  * image it belongs to (frame_times; NaN when that image is no longer
  * buffered), and every static version (each applies from its time on, so an
  * older one can still apply at tMin). Each PNG goes at its offset [x, y] in
  * the image; an empty overlay has 0 bytes. */
-function _collectOverlays(cam, payload, tMin) {
+function _collectOverlays(cam, payload, tMin, tMax = Infinity) {
     const store = cam.imageStore;
     const timeOfNumber = new Map();
     store.numbers.forEach((num, i) => { if (num != null) timeOfNumber.set(num, store.times[i]); });
@@ -311,7 +306,8 @@ function _collectOverlays(cam, payload, tMin) {
             // Keyed by the image's frame number, or else its time (= the overlay's).
             const number = key[0] === 'n' ? Number(key.slice(1)) : null;
             const frameTime = number != null ? (timeOfNumber.get(number) ?? NaN) : e.time;
-            if ((Number.isNaN(frameTime) ? e.time : frameTime) >= tMin) frames.push({...e, number, frameTime});
+            const t = Number.isNaN(frameTime) ? e.time : frameTime;
+            if (t >= tMin && t <= tMax) frames.push({...e, number, frameTime});
         }
         frames.sort((a, b) => a.time - b.time);
         const statics = cam.overlays.statics.get(name) || [];
@@ -330,6 +326,16 @@ function _firstIndexFrom(times, n, tMin) {
     while (lo < hi) {
         const mid = (lo + hi) >> 1;
         if (times[mid] < tMin) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+/** First index of the sorted `times` (length `n`) with time > tMax (n if none). */
+function _firstIndexAfter(times, n, tMax) {
+    let lo = 0, hi = n;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (times[mid] <= tMax) lo = mid + 1; else hi = mid;
     }
     return lo;
 }
@@ -361,27 +367,28 @@ class _PayloadWriter {
 /** Copies every series out of the chunked ring buffers. One series at a time
  * so the dialog can redraw in between; a single series is copied in one go,
  * so streaming data cannot evict a chunk halfway through it. */
-async function _collectTraceParts(traces, progress, payload, names = null, tMin = -Infinity) {
+async function _collectTraceParts(traces, progress, payload, names = null, tMin = -Infinity, tMax = Infinity) {
     const series = [];
     const all = Array.from(traces.seriesData).filter(([name]) => !names || names.has(name));
     for (let i = 0; i < all.length; i++) {
         if (progress.cancelled) throw new _ExportCancelled();
         const [name, s] = all[i];
-        // Per chunk the first entry inside the window; chunks are in time order.
+        // Per chunk the entries [start, end) inside the window; chunks are in time order.
         const starts = s.chunks.map(c => _firstIndexFrom(c.times, c.entries, tMin));
-        const n = s.chunks.reduce((a, c, ci) => a + c.entries - starts[ci], 0);
+        const ends = s.chunks.map((c, ci) => Math.max(starts[ci], _firstIndexAfter(c.times, c.entries, tMax)));
+        const n = s.chunks.reduce((a, c, ci) => a + ends[ci] - starts[ci], 0);
         if (n > 0) {
             const times = new Float64Array(n);
             const data = new Float32Array(n * s.dim);
             let k = 0;
             s.chunks.forEach((c, ci) => {
-                const from = starts[ci];
-                if (from >= c.entries) return;
-                times.set(c.times.subarray(from, c.entries), k);
+                const from = starts[ci], to = ends[ci];
+                if (from >= to) return;
+                times.set(c.times.subarray(from, to), k);
                 for (let d = 0; d < s.dim; d++) {
-                    c.copyColumn(d, data, d * n + k, from, c.entries);
+                    c.copyColumn(d, data, d * n + k, from, to);
                 }
-                k += c.entries - from;
+                k += to - from;
             });
             const entry = {name, dim: s.dim, n, times_offset: payload.add(times)};
             entry.data_offset = payload.add(data);
@@ -412,16 +419,17 @@ async function _pickVideoConfig(width, height, fps) {
 
 const _decodeJpeg = (bytes) => createImageBitmap(new Blob([bytes], {type: 'image/jpeg'}));
 
-/** Encodes the camera's buffered images from tMin on. Each frame keeps its
+/** Encodes the camera's buffered images in [tMin, tMax]. Each frame keeps its
  * capture time: the encoder runs on microseconds since the first frame, and
  * every packet is mapped back to the exact image timestamp. Frames whose size
  * differs from the first one, or that do not decode, are skipped (counted).
  * Returns null when the camera has no images in the window. */
-async function _encodeCamera(cam, tMin, progress, onProgress) {
+async function _encodeCamera(cam, tMin, tMax, progress, onProgress) {
     const store = cam.imageStore;
     // Snapshot: streaming keeps appending to (and evicting from) the store.
     const start = _firstIndexFrom(store.times, store.times.length, tMin);
-    const allTimes = store.times.slice(start), allBlobs = store.blobs.slice(start);
+    const end = _firstIndexAfter(store.times, store.times.length, tMax);
+    const allTimes = store.times.slice(start, end), allBlobs = store.blobs.slice(start, end);
     const times = [], blobs = [];
     allTimes.forEach((t, i) => {
         if (times.length === 0 || t > times[times.length - 1]) { times.push(t); blobs.push(allBlobs[i]); }
@@ -510,7 +518,7 @@ async function _encodeCamera(cam, tMin, progress, onProgress) {
 
 /** Encodes every camera and appends it to the payload. A camera that fails
  * (no encoder, decode error) is reported in `failed` and left out. */
-async function _collectVideoParts(cams, progress, payload, tMin, from, to) {
+async function _collectVideoParts(cams, progress, payload, tMin, tMax, from, to) {
     const videos = [], failed = [];
     if (cams.length && typeof VideoEncoder === 'undefined') {
         cams.forEach(cam => failed.push({name: cam.name, error: 'WebCodecs VideoEncoder not available'}));
@@ -523,7 +531,7 @@ async function _collectVideoParts(cams, progress, payload, tMin, from, to) {
             from + share * (ci + f), `Encoding ${cam.name} (${ci + 1}/${cams.length}): ${Math.round(100 * f)}%`);
         let v;
         try {
-            v = await _encodeCamera(cam, tMin, progress, onProgress);
+            v = await _encodeCamera(cam, tMin, tMax, progress, onProgress);
         } catch (e) {
             if (e instanceof _ExportCancelled) throw e;
             console.error(`exportData: encoding ${cam.name} failed`, e);
@@ -615,7 +623,7 @@ async function exportData() {
     }
     // Each option carries what it selects (`kind` + `item`).
     const options = [
-        {kind: 'traces', label: 'Traces', title: 'The time series (all, or those plotted for "Displayed")',
+        {kind: 'traces', label: 'Traces', title: 'All time series',
          checked: hasTraces, disabled: !hasTraces},
         ...cams.map(cam => ({kind: 'video', item: cam, label: `${cam.name} (video)`,
                              checked: !disabledImageSources.has(cam.name),
@@ -647,17 +655,17 @@ async function exportData() {
     }
 
     // Series to export: null = all. The scene setup brings its pose / colour series.
-    let names = withTraces ? null : new Set();
+    const names = withTraces ? null : new Set();
     let tag = 'all';
-    if (withTraces && choice.kind === 'displayed') {
-        names = _displayedSeriesNames();
-        tag = 'displayed';
-    }
     if (withScene && names) {
         for (const name of traces.seriesData.keys()) if (name.startsWith('3d/')) names.add(name);
     }
-    let tMin = -Infinity;
-    if (choice.kind === 'minutes') {
+    let tMin = -Infinity, tMax = Infinity;
+    if (choice.kind === 'displayed') {
+        // The x range the plots show now (zoomed, or the live window).
+        [tMin, tMax] = getXLim();
+        tag = 'displayed';
+    } else if (choice.kind === 'minutes') {
         const stores = [...selCams.map(cam => cam.imageStore), ...selOverlays.map(cam => cam.imageStore),
                         ...selDepth.map(pc => pc.store)];
         tMin = _latestDataTime(traces, names, stores) - 60 * choice.minutes;
@@ -665,6 +673,7 @@ async function exportData() {
     }
     const selection = {kind: choice.kind, minutes: choice.minutes ?? null,
                        t_min: Number.isFinite(tMin) ? tMin : null,
+                       t_max: Number.isFinite(tMax) ? tMax : null,
                        series: names ? Array.from(names) : null, traces: withTraces,
                        cameras: selCams.map(cam => cam.name), depth: selDepth.map(pc => pc.name),
                        overlays: selOverlays.map(cam => cam.name), markdown: withMarkdown,
@@ -675,13 +684,14 @@ async function exportData() {
     try {
         const payload = new _PayloadWriter();
         const series = names && names.size === 0
-            ? [] : await _collectTraceParts(traces, progress, payload, names, tMin);
-        const depth = selDepth.map(pc => _collectDepthSource(pc, traces.staticData, payload, tMin))
+            ? [] : await _collectTraceParts(traces, progress, payload, names, tMin, tMax);
+        const depth = selDepth.map(pc => _collectDepthSource(pc, traces.staticData, payload, tMin, tMax))
             .filter(d => d);
         const sceneSetup = withScene ? _collectSceneSetup(traces, payload) : null;
-        const overlays = selOverlays.flatMap(cam => _collectOverlays(cam, payload, tMin));
+        const overlays = selOverlays.flatMap(cam => _collectOverlays(cam, payload, tMin, tMax));
         const markdown = withMarkdown
-            ? session.mdLog.messages.filter(m => m.time >= tMin).map(m => ({time: m.time, text: m.text}))
+            ? session.mdLog.messages.filter(m => m.time >= tMin && m.time <= tMax)
+                .map(m => ({time: m.time, text: m.text}))
             : [];
         // Small, always included: the marks and the session's viewer settings.
         const markers = session.marks.markers.map(m => ({label: m.label, time: m.time,
@@ -689,7 +699,7 @@ async function exportData() {
         const settings = JSON.parse(JSON.stringify(session.settings || {}));
         const videoTo = selCams.length ? _EXPORT_COLLECT_SHARE + _EXPORT_VIDEO_SHARE : _EXPORT_COLLECT_SHARE;
         const collected = await _collectVideoParts(
-            selCams, progress, payload, tMin, _EXPORT_COLLECT_SHARE, videoTo);
+            selCams, progress, payload, tMin, tMax, _EXPORT_COLLECT_SHARE, videoTo);
         const videos = collected.videos;
         failed = collected.failed;
         if (series.length === 0 && videos.length === 0 && depth.length === 0 && !sceneSetup

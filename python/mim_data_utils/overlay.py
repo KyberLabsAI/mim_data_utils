@@ -488,7 +488,7 @@ class OverlayRenderer:
             avoid_cpus = sorted(os.sched_getaffinity(0))
         except AttributeError:                  # not Linux
             avoid_cpus = []
-        # spawn, not fork: the server is multi-threaded (ZMQ, websocket
+        # spawn, not fork: the server is multi-threaded (Zenoh, websocket
         # threads), and forking a threaded process can deadlock the child.
         ctx = mp.get_context('spawn')
         self._in = ctx.Queue(maxsize=max_queue)

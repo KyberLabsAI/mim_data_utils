@@ -19,7 +19,8 @@ import multiprocessing
 
 from .scene import RawMesh, Scene, PointCloud
 from .overlay import image_size, overlay_items
-from kyber_utils.zeromq import ZmqPublisher, ZmqRemoteValue
+import zenoh
+from kyber_utils.transport import Publisher, MsgPackClient, RemoteValue, RemoteError
 from kyber_utils.iters import sync, register_sync_methods
 
 # Item types routed to the low-priority '/camera/' publisher (video frames).
@@ -29,7 +30,7 @@ _CAMERA_TYPES = ('image', 'video_segment')
 # backpressure they should drop before camera video and long before timeseries.
 _POINTCLOUD_TYPES = ('depth',)
 # Setup items (scene registrations and viewer settings) go on their own
-# '/setup/' publisher. The server unpacks and caches them per session so it can
+# '/setup' publisher. The server unpacks and caches them per session so it can
 # replay them to a viewer that connects (or reloads) later; everything else
 # stays an opaque blob on the relay hot path.
 _SETUP_TYPES = ('setup',)
@@ -39,6 +40,10 @@ _OVERLAY_TYPES = ('overlay',)
 
 # Session name used when the producer does not specify one.
 DEFAULT_SESSION = 'Default'
+
+# Key of the server's RemoteKeyValueServer (websocket_num_clients). Not the
+# transport's default key, which other processes may serve too.
+REMOTE_VALUES_KEY = 'mim/remote_values'
 
 
 def resolve_shm_items(items):
@@ -488,9 +493,14 @@ def expand_sample_batch(item):
 
 
 class WebsocketWriter:
-    # pyzmq sockets are NOT thread-safe. This lock serialises all socket
-    # touches (init/close/send) across every thread. Everything that can
-    # read or write self.publisher / self.camera_publisher acquires it.
+    # Talks to the server (server.py) over the Zenoh transport. This lock
+    # serialises init/close/send across every thread, so no thread sends on
+    # a publisher that set_session() is replacing. Everything that can read
+    # or write self.publisher / self.camera_publisher acquires it.
+
+    # How long init() waits for the server to be discovered [ms].
+    CONNECT_TIMEOUT_MS = 500
+
     def __init__(self):
         self.session_name = None
         self.publisher = None
@@ -499,6 +509,7 @@ class WebsocketWriter:
         self.setup_publisher = None
         self.overlay_publisher = None
         self.num_connected_clients = None
+        self._wait_for_server = True
         self._lock = threading.RLock()
     def init(self):
         with self._lock:
@@ -506,25 +517,36 @@ class WebsocketWriter:
 
             # All data topics are session-scoped so the server can track
             # session liveness and route without unpacking payloads.
-            self.publisher = ZmqPublisher(f'/timeseries/{self.session_name}')
-            self.camera_publisher = ZmqPublisher(f'/camera/{self.session_name}', sndhwm=2)
-            self.pointcloud_publisher = ZmqPublisher(f'/pointcloud/{self.session_name}', sndhwm=2)
-            self.setup_publisher = ZmqPublisher('/setup/')
-            self.overlay_publisher = ZmqPublisher(f'/overlay/{self.session_name}')
-            self.num_connected_clients = ZmqRemoteValue('websocket_num_clients')
+            # Publishers drop messages under congestion instead of blocking.
+            self.publisher = Publisher(f'/timeseries/{self.session_name}')
+            self.camera_publisher = Publisher(f'/camera/{self.session_name}')
+            self.pointcloud_publisher = Publisher(f'/pointcloud/{self.session_name}')
+            self.setup_publisher = Publisher('/setup')
+            self.overlay_publisher = Publisher(f'/overlay/{self.session_name}')
+            self.num_connected_clients = RemoteValue(
+                'websocket_num_clients', key=REMOTE_VALUES_KEY)
 
-            if not self.publisher.wait_connected():
-                raise ConnectionError('Timeseries publisher failed to connect to ZMQ broker')
-            if not self.camera_publisher.wait_connected():
-                raise ConnectionError('Camera publisher failed to connect to ZMQ broker')
-            if not self.pointcloud_publisher.wait_connected():
-                raise ConnectionError('Point cloud publisher failed to connect to ZMQ broker')
-            if not self.setup_publisher.wait_connected():
-                raise ConnectionError('Setup publisher failed to connect to ZMQ broker')
-            if not self.overlay_publisher.wait_connected():
-                raise ConnectionError('Overlay publisher failed to connect to ZMQ broker')
+            # Messages sent before the server's subscribers are discovered
+            # (a few ms after the session opens) are lost, among them the
+            # session launch and the setups, so wait for them. Without a
+            # server, init() gives up after CONNECT_TIMEOUT_MS and does not
+            # wait again: data is dropped until a server runs.
+            if self._wait_for_server:
+                deadline = time.monotonic() + self.CONNECT_TIMEOUT_MS / 1000.
+                for pub in (self.setup_publisher, self.publisher, self.camera_publisher,
+                            self.pointcloud_publisher, self.overlay_publisher):
+                    remaining_ms = max(0., deadline - time.monotonic()) * 1000.
+                    if not pub.wait_connected(remaining_ms):
+                        print('[mim_data_utils] no server found (serve.sh): '
+                              'logged data is dropped until one runs.')
+                        self._wait_for_server = False
+                        break
 
     def set_session(self, name):
+        try:
+            zenoh.KeyExpr(f'timeseries/{name}')
+        except zenoh.ZError as e:
+            raise ValueError(f'Invalid session name {name!r}: {e}') from None
         with self._lock:
             self.session_name = name
 
@@ -599,9 +621,7 @@ class WebsocketWriter:
             WebsocketWriter._log_debug_max_img_age = 0
             WebsocketWriter._log_debug_last_print = now
 
-        # Socket access must be serialised — pyzmq sockets are not
-        # thread-safe, and a concurrent close() from set_session() would
-        # otherwise let the zmq I/O thread touch freed memory (GPF).
+        # Serialised with close()/init(), see the class comment.
         with self._lock:
             if self.publisher is None:
                 self.init()
@@ -746,7 +766,7 @@ class Logger(threading.Thread):
         self.session_name = session or DEFAULT_SESSION
 
         # Ship log_image payloads via a shared-memory ring instead of inline
-        # zeromq bytes: the message then carries only a small reference, and
+        # transport bytes: the message then carries only a small reference, and
         # the server reads the payload lazily — only when it actually forwards
         # the frame to a viewer (nothing is read under backpressure). Requires
         # producer and server on the same machine; falls back to inline
@@ -852,7 +872,7 @@ class Logger(threading.Thread):
                       f"img_age: avg={sum(img_ages)/len(img_ages):.3f}s max={max(img_ages):.3f}s")
                 Logger._flush_debug_last_print = now
             self._send_data(item_to_log)
-            # Flush timing (the pack + zmq send holds the GIL): exposed as
+            # Flush timing (the pack + send holds the GIL): exposed as
             # flush_stats for the control-loop health reporter.
             dt = time.perf_counter() - t_send0
             if not hasattr(self, 'flush_stats'):
@@ -1300,21 +1320,30 @@ class Logger(threading.Thread):
 
     # -- recordings (run by the server process, see recorder.RecordingManager) --
 
-    RECORDER_RPC_ENDPOINT = 'ipc:///tmp/mim_recorder_rpc'
+    RECORDER_RPC_KEY = 'mim/recorder/rpc'      # recorder.RPC_KEY
+    _recorder_rpc_client = None
+    _recorder_rpc_lock = threading.Lock()
 
     def _recorder_rpc(self, op, timeout_ms=2000, **args):
-        import zmq
-        sock = zmq.Context.instance().socket(zmq.REQ)
-        sock.setsockopt(zmq.LINGER, 0)
-        sock.connect(self.RECORDER_RPC_ENDPOINT)
-        try:
-            sock.send(ormsgpack.packb({'op': op, 'args': args}))
-            if not sock.poll(timeout_ms):
+        # One client for all Loggers of the process: a request is ~1 ms, the
+        # lock only serialises callers on different threads.
+        with Logger._recorder_rpc_lock:
+            if Logger._recorder_rpc_client is None:
+                Logger._recorder_rpc_client = MsgPackClient(self.RECORDER_RPC_KEY)
+            client = Logger._recorder_rpc_client
+            client.timeout_s = timeout_ms / 1000.
+            request = client.send_wait_gen({'op': op, 'args': args})
+            try:
+                while True:
+                    next(request)
+                    time.sleep(0.0002)
+            except StopIteration as stop:
+                reply = stop.value
+            except TimeoutError:
                 raise TimeoutError('no reply from the mim_data_utils server '
-                                   '(is serve.sh running, with recording support?)')
-            reply = ormsgpack.unpackb(sock.recv())
-        finally:
-            sock.close()
+                                   '(is serve.sh running, with recording support?)') from None
+            except RemoteError as e:
+                raise RuntimeError(f'recording {op} failed: {e}') from None
         if not reply.get('ok'):
             raise RuntimeError(f"recording {op} failed: {reply.get('error')}")
         return reply

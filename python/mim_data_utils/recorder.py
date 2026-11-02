@@ -919,7 +919,7 @@ class Recorder:
 
 # -- recordings managed by the server -----------------------------------------
 
-RPC_ENDPOINT = 'ipc:///tmp/mim_recorder_rpc'
+RPC_KEY = 'mim/recorder/rpc'
 DEFAULT_TEMPLATE = 'mim_{timestamp}.zst'
 _PRUNE_DONE_S = 600.0
 
@@ -1124,18 +1124,11 @@ class RecordingManager:
             return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
 
 
-def serve_rpc(manager, endpoint=RPC_ENDPOINT):
-    """REP loop for Logger.record / stop_recording (run in a server thread)."""
-    import zmq
-    sock = zmq.Context.instance().socket(zmq.REP)
-    sock.bind(endpoint)
-    while True:
-        try:
-            request = ormsgpack.unpackb(sock.recv())
-        except Exception as e:
-            sock.send(ormsgpack.packb({'ok': False, 'error': f'bad request: {e}'}))
-            continue
-        sock.send(ormsgpack.packb(manager.handle_rpc(request)))
+def serve_rpc(manager, key=RPC_KEY):
+    """Server thread for Logger.record / stop_recording (Zenoh request/reply).
+    A request that does not unpack reaches the client as an error."""
+    from kyber_utils.transport import MsgPackServer
+    return MsgPackServer(key, manager.handle_rpc)
 
 
 def main():

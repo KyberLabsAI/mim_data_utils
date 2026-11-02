@@ -5,21 +5,20 @@ import time
 import ormsgpack
 
 from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
-from kyber_utils.zeromq import (
-    ZmqBroker,
-    ZmqSubscriber,
-    ZmqRemoteKeyValueServer,
-)
+from kyber_utils.transport import Subscriber, RemoteKeyValueServer
 
 try:
-    from mim_data_utils.logger import resolve_shm_items, pack_sample_batch
+    from mim_data_utils.logger import resolve_shm_items, pack_sample_batch, REMOTE_VALUES_KEY
     from mim_data_utils.recorder import RecordingManager, serve_rpc
     from mim_data_utils.overlay import OverlayRenderer, StaticOverlayCache
 except ImportError:
     # server.py can be run as a plain script from the package directory.
-    from logger import resolve_shm_items, pack_sample_batch
+    from logger import resolve_shm_items, pack_sample_batch, REMOTE_VALUES_KEY
     from recorder import RecordingManager, serve_rpc
     from overlay import OverlayRenderer, StaticOverlayCache
+
+# Receive buffer of the camera / point-cloud subscribers [messages].
+FRAME_QUEUE_SIZE = 8
 
 class SessionTracker:
     """Live-session bookkeeping: which sessions exist and when each last saw data.
@@ -375,18 +374,13 @@ class WebsocketHandlerPubSub(WebsocketHandler):
 
 
 def run():
-    # Start the ZeroMQ broker.
-    broker = ZmqBroker()
-    broker.start()
-
-    while not broker.is_running:
-        time.sleep(0.01)
-
-    value_server = ZmqRemoteKeyValueServer({
+    # Producers (Logger) reach this process over the Zenoh transport: no
+    # broker to start, every process joins through its own session.
+    value_server = RemoteKeyValueServer({
         'websocket_num_clients': 0,
-    })
+    }, key=REMOTE_VALUES_KEY)
 
-    # Shared Zmq value to keep track of connected websockets.
+    # Shared remote value to keep track of connected websockets.
     WebsocketHandlerPubSub.value_server = value_server
 
     setup_registry = SetupRegistry()
@@ -422,8 +416,7 @@ def run():
 
     recordings = RecordingManager(header_fn=recording_header, port=5678)
     websocket.recordings = recordings
-    threading.Thread(target=serve_rpc, args=(recordings,), daemon=True,
-                     name='recorder-rpc').start()
+    recorder_rpc = serve_rpc(recordings)
     print(f"[recorder] recordings go to {os.environ.get('MIM_RECORDINGS_DIR') or os.path.abspath('recordings')}")
 
     websocket.start()
@@ -641,7 +634,7 @@ def run():
                     # Bin by the item's OWN session, never by the topic's.
                     # Several Loggers can share one WebsocketWriter, and each
                     # Logger's constructor calls set_session() on it -- so the
-                    # ZMQ topic reflects whichever Logger was built last and
+                    # topic reflects whichever Logger was built last and
                     # says nothing about where a given sample belongs. Only
                     # the per-item 'session' does (Logger._append_log stamps
                     # it). Getting this wrong files every producer's traces
@@ -672,11 +665,17 @@ def run():
 
     threading.Thread(target=bin_flusher, name='sample-bin-flusher', daemon=True).start()
 
-    sub_camera = ZmqSubscriber('/camera/', callback=on_camera)
-    sub_pointcloud = ZmqSubscriber('/pointcloud/', callback=on_pointcloud)
-    sub_timeseries = ZmqSubscriber('/timeseries/', callback=on_timeseries)
-    sub_setup = ZmqSubscriber('/setup/', callback=on_setup)
-    sub_overlay = ZmqSubscriber('/overlay/', callback=on_overlay)
+    # Topics are '/<kind>/<session>' (see WebsocketWriter.init); '**' matches
+    # every session. Camera and point-cloud frames are the heaviest payloads:
+    # a short receive buffer sheds stale ones (the oldest is dropped) instead
+    # of relaying a backlog.
+    sub_camera = Subscriber('/camera/**', callback=on_camera,
+                            queue_size=FRAME_QUEUE_SIZE)
+    sub_pointcloud = Subscriber('/pointcloud/**', callback=on_pointcloud,
+                                queue_size=FRAME_QUEUE_SIZE)
+    sub_timeseries = Subscriber('/timeseries/**', callback=on_timeseries)
+    sub_setup = Subscriber('/setup', callback=on_setup)
+    sub_overlay = Subscriber('/overlay/**', callback=on_overlay)
 
     print("Publishing timeseries (Ctrl+C to stop)...")
     try:
@@ -684,6 +683,7 @@ def run():
             time.sleep(1.)
     except KeyboardInterrupt:
         print("\nStopped.")
+        recorder_rpc.close()
         recordings.close_all()
         sub_camera.close()
         sub_pointcloud.close()

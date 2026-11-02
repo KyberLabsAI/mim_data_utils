@@ -2,7 +2,7 @@
 import time
 import struct
 import ormsgpack
-from kyber_utils.zeromq import ZmqSubscriber
+from kyber_utils.transport import Subscriber
 
 
 def parse_boxes(data, indent=0):
@@ -31,7 +31,7 @@ def parse_boxes(data, indent=0):
 
 
 def main():
-    print("Subscribing to /camera/ ZMQ topic...")
+    print("Subscribing to the /camera/** topics...")
     inits = {}
     fragments = {}
 
@@ -76,7 +76,7 @@ def main():
                             print(f"  Written init + 3 fragments to /tmp/{fname}")
                             print(f"  Verify with: ffprobe /tmp/{fname}")
 
-    sub = ZmqSubscriber('/camera/', callback=on_data)
+    sub = Subscriber('/camera/**', callback=on_data)
 
     print("Waiting for data (Ctrl+C to stop)...")
     try:
