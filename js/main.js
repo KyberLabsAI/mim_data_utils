@@ -762,6 +762,13 @@ function updateLayout() {
         let parts = [];
         while (plotDef.length > 0) {
             let match = plotDef.match(/(([^\[]+)\[([^\]]*)\],*)/);
+            if (!match) {
+                // Text without a "name[...]" (a trace name without brackets,
+                // an unclosed "[", a typo): skip it instead of throwing -- the
+                // layout is persisted, so a throw here broke every reload.
+                console.warn(`Plot layout: ignoring "${plotDef}" (expected name[from:to])`);
+                break;
+            }
             match[3].split(',').forEach(bit => {
                 let details = bit.match(/^(\d+)?(:(\d+)?)?/);
 

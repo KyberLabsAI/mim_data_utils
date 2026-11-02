@@ -39,13 +39,25 @@ class TickDrawer {
         let tickMax = to - (to % tickStepSize);
 
         this.drawnTicks.clear();
-        for (let tick = tickMin; tick <= tickMax + tickStepSize / 2; tick += tickStepSize) {
-            this.drawTick(tick, true, 0);
+        // A step below the float resolution at `from` would never advance
+        // `tick` (range ~1e-15 around 5): draw ticks by index, and at most a
+        // bounded number of them.
+        let nTicks = Math.floor((tickMax - tickMin) / tickStepSize + 0.5);
+        if (!(tickStepSize > 0) || !Number.isFinite(nTicks)) {
+            return;
+        }
+        nTicks = Math.min(nTicks, Math.ceil(ticks) + 2);
+        for (let k = 0; k <= nTicks; k++) {
+            this.drawTick(tickMin + k * tickStepSize, true, 0);
         }
     }
 
     getTickText(tick, precision) {
-        return tick.toFixed(-Math.min(-precision, this.tickSize10 - precision));
+        let digits = -Math.min(-precision, this.tickSize10 - precision);
+        // A zero-width (or denormal) axis range makes tickSize10 -Infinity, and
+        // toFixed() throws outside 0..100 digits.
+        digits = Number.isFinite(digits) ? Math.min(Math.max(digits, 0), 20) : precision;
+        return tick.toFixed(digits);
     }
 
     drawTick(tick, drawText, precision) {
